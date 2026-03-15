@@ -484,7 +484,12 @@ function mkForm() {
   });
   sg.appendChild(sl); sg.appendChild(sp); wrap.appendChild(sg);
 
-  wrap.appendChild(mkField('Preis','number','z.B. 1,49 €','preis'));
+  // Price field — numeric keyboard with decimal support
+  const pg2 = div('field-group'), pl2 = el('label','lbl'); pl2.textContent='Preis';
+  const pi = el('input','inp'); pi.type='text'; pi.inputMode='decimal'; pi.placeholder='z.B. 1,49 €'; pi.value=form.preis||'';
+  pi.oninput=e=>form.preis=e.target.value;
+  pg2.appendChild(pl2); pg2.appendChild(pi); wrap.appendChild(pg2);
+
   wrap.appendChild(mkField('Wo gekauft','text','z.B. Spar, Billa, DM…','gekauft'));
 
   const ng = div('field-group'), nl = el('label','lbl'); nl.textContent='Notizen';
