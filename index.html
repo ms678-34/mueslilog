@@ -512,23 +512,6 @@ function mkDetail() {
 
 // ─── Barcode ──────────────────────────────────────────
 
-// ZXing reader with TRY_HARDER hint — the key to reliable scanning
-function makeReader() {
-  const hints = new Map();
-  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-    ZXing.BarcodeFormat.EAN_13,
-    ZXing.BarcodeFormat.EAN_8,
-    ZXing.BarcodeFormat.UPC_A,
-    ZXing.BarcodeFormat.UPC_E,
-    ZXing.BarcodeFormat.CODE_128,
-    ZXing.BarcodeFormat.CODE_39,
-    ZXing.BarcodeFormat.DATA_MATRIX,
-    ZXing.BarcodeFormat.QR_CODE,
-  ]);
-  return new ZXing.BrowserMultiFormatReader(hints);
-}
-
 async function handleBarcodeImage(file) {
   const btn = document.getElementById('scan-btn');
   const setBtn = (txt) => {
@@ -537,62 +520,64 @@ async function handleBarcodeImage(file) {
     btn.innerHTML = txt || '<span>📷</span> Barcode scannen';
   };
   setBtn('<span>⏳</span> Bild wird analysiert…');
-
   try {
     const code = await decodeBarcode(file);
     setBtn(null);
-    if (code) {
-      await lookupBarcode(code);
-    } else {
-      toast('Kein Barcode erkannt – Barcode mittig halten, gute Beleuchtung');
-    }
+    if (code) { await lookupBarcode(code); }
+    else { toast('Kein Barcode erkannt – Barcode mittig ins Bild halten'); }
   } catch(e) {
-    console.error('Barcode decode error:', e);
+    console.error('Barcode error:', e);
     setBtn(null);
     toast('Fehler beim Verarbeiten des Fotos');
   }
 }
 
-async function decodeBarcode(file) {
-  // Step 1: load image correcting EXIF rotation, keep high res (1920px)
-  const original = await loadImageCanvas(file, 1920);
+// ZXing low-level decode — TRY_HARDER actually works here (decodeFromCanvas ignores hints)
+function zxingDecode(canvas) {
+  const ctx  = canvas.getContext('2d');
+  const { width, height } = canvas;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const src = new ZXing.RGBLuminanceSource(imgData.data, width, height);
+  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(src));
+  const hints = new Map([
+    [ZXing.DecodeHintType.TRY_HARDER, true],
+    [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A,  ZXing.BarcodeFormat.UPC_E,
+      ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+      ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.QR_CODE,
+    ]],
+  ]);
+  const reader = new ZXing.MultiFormatReader();
+  reader.setHints(hints);
+  return reader.decode(bmp); // throws NotFoundException if nothing found
+}
 
-  // Step 2: try all strategies in order, return first hit
+async function decodeBarcode(file) {
+  const original = await loadImageCanvas(file, 1920);
   const strategies = [
     () => original,
     () => preprocessCanvas(original, 'contrast'),
-    () => cropCenter(original, 1.0, 0.5),            // center horizontal strip
-    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'contrast'),
-    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'threshold'),
-    () => cropCenter(original, 1.0, 0.4),             // tighter strip
-    () => upscale(cropCenter(original, 1.0, 0.4), 2), // upscaled strip
-    () => cropRegion(original, 0.0, 0.35, 1.0, 0.65), // lower-center (typical hand-held shot)
+    () => cropRegion(original, 0.0, 0.35, 1.0, 0.65),
     () => preprocessCanvas(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 'contrast'),
-    () => cropRegion(original, 0.2, 0.3, 0.9, 0.7),  // center quadrant
-    () => upscale(cropRegion(original, 0.2, 0.3, 0.9, 0.7), 1.5),
+    () => cropCenter(original, 1.0, 0.5),
+    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'contrast'),
+    () => upscale(cropCenter(original, 1.0, 0.4), 2),
+    () => upscale(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 1.5),
     () => preprocessCanvas(original, 'threshold'),
+    () => preprocessCanvas(cropCenter(original, 1.0, 0.4), 'threshold'),
     () => rotate(original, 90),
     () => rotate(original, 270),
     () => preprocessCanvas(rotate(original, 90), 'contrast'),
-    () => rotateSmall(original, 10),
-    () => rotateSmall(original, -10),
-    () => rotateSmall(original, 20),
-    () => rotateSmall(original, -20),
+    () => rotateSmall(original, 10),  () => rotateSmall(original, -10),
+    () => rotateSmall(original, 20),  () => rotateSmall(original, -20),
     () => preprocessCanvas(original, 'invert'),
   ];
-
-  const reader = makeReader();
   for (const strategy of strategies) {
     try {
-      const canvas = strategy();
-      const result = reader.decodeFromCanvas(canvas);
-      if (result) {
-        console.log('Barcode found:', result.getText());
-        return result.getText();
-      }
-    } catch(e) {
-      // NotFoundException is normal — just means this strategy didn't work
-    }
+      const result = zxingDecode(strategy());
+      if (result) { console.log('✓ Barcode:', result.getText()); return result.getText(); }
+    } catch(e) { /* NotFoundException = try next */ }
   }
   return null;
 }
