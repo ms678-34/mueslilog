@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="Müslilog"/>
+  <meta name="theme-color" content="#ffffff"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="apple-touch-icon.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <title>Müslilog</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #F5F5F7;
+      --surface:  #FFFFFF;
+      --border:   #E4E4E7;
+      --text:     #09090B;
+      --sub:      #71717A;
+      --hint:     #A1A1AA;
+      --accent:   #16A34A;
+      --accent-l: #DCFCE7;
+      --accent-d: #14532D;
+      --star:     #F59E0B;
+      --red:      #DC2626;
+      --red-l:    #FEE2E2;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bot: env(safe-area-inset-bottom, 0px);
+      --r:        14px;
+      --r-sm:     10px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 15px;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #app {
+      max-width: 480px;
+      margin: 0 auto;
+      min-height: 100%;
+    }
+
+    /* ── HEADER ── */
+    .header {
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      padding: calc(14px + var(--safe-top)) 20px 14px;
+      position: sticky; top: 0; z-index: 50;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-inner { display: flex; align-items: center; justify-content: space-between; }
+    .header-title { font-size: 20px; font-weight: 800; letter-spacing: -.02em; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .header-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .header-count { font-size: 12px; font-weight: 500; color: var(--sub); background: var(--bg); padding: 4px 10px; border-radius: 20px; }
+    .back-btn { background: none; border: none; color: var(--accent); font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; display: flex; align-items: center; gap: 4px; padding: 0; }
+
+    /* ── STATS ── */
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px 16px 0; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; }
+    .stat-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--hint); margin-bottom: 4px; }
+    .stat-value { font-size: 24px; font-weight: 800; letter-spacing: -.03em; color: var(--text); }
+    .stat-value span { font-size: 14px; font-weight: 500; color: var(--sub); }
+
+    /* ── LIST ── */
+    .list { padding: 12px 0 100px; }
+    .empty { text-align: center; padding: 80px 32px; }
+    .empty-icon { font-size: 56px; margin-bottom: 18px; }
+    .empty-title { font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 8px; letter-spacing: -.02em; }
+    .empty-sub { font-size: 14px; color: var(--sub); line-height: 1.6; }
+    .empty-sub strong { color: var(--accent); }
+
+    /* ── CARD ── */
+    .card {
+      background: var(--surface); margin: 0 16px 10px;
+      border-radius: var(--r); border: 1px solid var(--border);
+      overflow: hidden; display: flex; cursor: pointer;
+      transition: transform .12s, box-shadow .12s;
+      -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .card:active { transform: scale(.985); }
+    .card-thumb {
+      width: 90px; flex-shrink: 0;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px; position: relative;
+    }
+    .card-thumb img { width: 90px; height: 100%; object-fit: cover; display: block; }
+    .card-body { flex: 1; padding: 13px 14px; min-width: 0; }
+    .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+    .card-name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-score { font-size: 13px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+    .card-brand { font-size: 12px; color: var(--sub); margin-bottom: 7px; }
+    .card-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .pill { font-size: 11px; font-weight: 600; border-radius: 20px; padding: 3px 8px; }
+    .pill-green { background: var(--accent-l); color: var(--accent-d); }
+    .pill-gray { background: var(--bg); color: var(--sub); border: 1px solid var(--border); }
+    .card-date { font-size: 11px; color: var(--hint); margin-left: auto; }
+
+    /* ── STARS ── */
+    .stars { display: flex; gap: 2px; }
+    .star { color: var(--border); line-height: 1; transition: color .1s; }
+    .star.on { color: var(--star); }
+    .star.tap { cursor: pointer; }
+    .star.tap:active { transform: scale(1.3); }
+
+    /* ── FAB ── */
+    .fab {
+      position: fixed;
+      bottom: calc(24px + var(--safe-bot));
+      right: max(20px, calc(50% - 220px));
+      width: 56px; height: 56px;
+      border-radius: 50%;
+      background: var(--accent); color: #fff;
+      border: none; font-size: 28px; line-height: 1;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(22,163,74,.4);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 40; transition: transform .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .fab:active { transform: scale(.9); }
+
+    /* ── FORM ── */
+    .form-page { padding: 20px 16px calc(110px + var(--safe-bot)); }
+    .form-title { font-size: 22px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 22px; }
+
+    .scan-btn {
+      width: 100%; padding: 14px; border-radius: var(--r);
+      background: var(--accent); color: #fff; border: none;
+      font-size: 15px; font-weight: 700; font-family: inherit;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; gap: 10px; margin-bottom: 20px;
+      transition: opacity .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .scan-btn:active { opacity: .85; }
+    .scan-btn .scan-icon { font-size: 20px; }
+
+    .divider { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .divider::before, .divider::after { content:''; flex:1; height:1px; background: var(--border); }
+    .divider span { font-size: 12px; font-weight: 600; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; }
+
+    .field-group { margin-bottom: 14px; }
+    .lbl { font-size: 12px; font-weight: 600; color: var(--sub); margin-bottom: 6px; display: block; letter-spacing: .02em; }
+    .inp {
+      width: 100%; padding: 12px 14px; border-radius: var(--r-sm);
+      border: 1.5px solid var(--border); background: var(--surface);
+      font-size: 15px; color: var(--text); font-family: inherit;
+      outline: none; transition: border-color .15s; -webkit-appearance: none;
+    }
+    .inp:focus { border-color: var(--accent); }
+    textarea.inp { min-height: 86px; resize: vertical; }
+
+    .star-pick { display: flex; gap: 6px; padding: 4px 0; }
+    .star-pick .star { font-size: 34px; cursor: pointer; transition: transform .12s; }
+    .star-pick .star:active { transform: scale(1.25); }
+
+    .photo-zone {
+      border: 2px dashed var(--border); border-radius: var(--r-sm);
+      padding: 24px; text-align: center; cursor: pointer;
+      background: var(--bg); transition: border-color .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .photo-zone:active { border-color: var(--accent); }
+    .photo-zone .pz-icon { font-size: 30px; margin-bottom: 8px; }
+    .photo-zone .pz-hint { font-size: 13px; color: var(--sub); }
+    .photo-zone img { width: 100%; max-height: 150px; object-fit: cover; border-radius: 8px; }
+
+    .btn-primary {
+      width: 100%; padding: 15px; border-radius: var(--r);
+      background: var(--accent); color: #fff; border: none;
+      font-size: 16px; font-weight: 700; font-family: inherit;
+      cursor: pointer; margin-top: 8px; letter-spacing: -.01em;
+      -webkit-tap-highlight-color: transparent; transition: opacity .15s;
+    }
+    .btn-primary:active { opacity: .85; }
+    .btn-secondary {
+      width: 100%; padding: 14px; border-radius: var(--r);
+      background: transparent; color: var(--sub);
+      border: 1.5px solid var(--border); font-size: 15px;
+      font-family: inherit; font-weight: 500; cursor: pointer; margin-top: 10px;
+    }
+    .btn-del { color: var(--red); border-color: var(--red-l); margin-top: 10px; }
+
+    /* ── DETAIL ── */
+    .detail-hero {
+      width: 100%; height: 240px;
+      background: var(--bg); display: flex;
+      align-items: center; justify-content: center; font-size: 80px;
+      position: relative;
+    }
+    .detail-hero img { width: 100%; height: 240px; object-fit: cover; display: block; }
+    .detail-body { padding: 20px 20px; }
+    .detail-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
+    .detail-name { font-size: 26px; font-weight: 800; letter-spacing: -.03em; flex: 1; }
+    .detail-brand-badge { background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; font-size: 12px; font-weight: 600; color: var(--sub); white-space: nowrap; }
+    .detail-tags { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 18px; }
+    .detail-note { background: var(--bg); border-radius: var(--r-sm); padding: 14px 16px; font-size: 14px; color: var(--sub); line-height: 1.7; margin-bottom: 20px; font-style: italic; }
+    .detail-score { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+    .detail-score-num { font-size: 36px; font-weight: 800; color: var(--text); letter-spacing: -.04em; }
+    .detail-score-num span { font-size: 18px; color: var(--hint); }
+
+    /* ── SCANNER OVERLAY ── */
+    .scanner-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: #000;
+      display: flex; flex-direction: column;
+    }
+    .scanner-header {
+      padding: calc(20px + var(--safe-top)) 20px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .scanner-title { color: #fff; font-size: 17px; font-weight: 700; }
+    .scanner-close { background: rgba(255,255,255,.15); border: none; color: #fff; width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; }
+    #qr-reader { flex: 1; overflow: hidden; position: relative; }
+    #qr-reader video { width: 100% !important; }
+    .scanner-hint { padding: 16px 20px calc(20px + var(--safe-bot)); text-align: center; color: rgba(255,255,255,.6); font-size: 13px; flex-shrink: 0; }
+    .scanner-frame {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -55%);
+      width: 300px; height: 140px; pointer-events: none;
+    }
+    .scanner-frame::before, .scanner-frame::after,
+    .scanner-frame > span::before, .scanner-frame > span::after {
+      content: ''; position: absolute; width: 28px; height: 28px;
+      border-color: var(--accent); border-style: solid;
+    }
+    .scanner-frame::before { top: 0; left: 0; border-width: 3px 0 0 3px; border-radius: 4px 0 0 0; }
+    .scanner-frame::after  { top: 0; right: 0; border-width: 3px 3px 0 0; border-radius: 0 4px 0 0; }
+    .scanner-frame > span::before { bottom: 0; left: 0; border-width: 0 0 3px 3px; border-radius: 0 0 0 4px; }
+    .scanner-frame > span::after  { bottom: 0; right: 0; border-width: 0 3px 3px 0; border-radius: 0 0 4px 0; }
+
+    /* ── LOADING ── */
+    .loading-overlay {
+      position: fixed; inset: 0; z-index: 300;
+      background: rgba(255,255,255,.85);
+      backdrop-filter: blur(8px);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px;
+    }
+    .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 14px; font-weight: 600; color: var(--sub); }
+
+    /* ── TOAST ── */
+    .toast {
+      position: fixed; bottom: calc(88px + var(--safe-bot)); left: 50%;
+      transform: translateX(-50%);
+      background: var(--text); color: #fff;
+      padding: 10px 20px; border-radius: 30px; font-size: 14px;
+      font-weight: 500; z-index: 500; pointer-events: none;
+      white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,.2);
+      animation: popUp .18s ease;
+    }
+    @keyframes popUp { from { opacity:0; transform:translateX(-50%) translateY(8px); } }
+
+    /* ── PAGE ANIM ── */
+    .page { animation: fadeUp .2s ease; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+// ─── State ───────────────────────────────────────────
+const STORE = 'mueslilog-v2';
+let riegel = JSON.parse(localStorage.getItem(STORE) || '[]');
+let view = 'list'; // list | add | detail
+let selectedId = null;
+let editMode = false;
+let form = blank();
+let scanner = null;
+let scannerOpen = false;
+let toastTimer = null;
+
+function blank() {
+  return { name:'', marke:'', bewertung:0, preis:'', gekauft:'', notizen:'', foto:null };
+}
+function save() { localStorage.setItem(STORE, JSON.stringify(riegel)); }
+
+// ─── Router ──────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  app.appendChild(mkHeader());
+
+  if (view === 'list') {
+    if (riegel.length) app.appendChild(mkStats());
+    app.appendChild(mkList());
+    app.appendChild(mkFab());
+  } else if (view === 'add') {
+    app.appendChild(mkForm());
+  } else if (view === 'detail') {
+    app.appendChild(mkDetail());
+  }
+}
+
+function goBack() {
+  view = 'list'; editMode = false; form = blank();
+  closeScanner(); render();
+}
+
+// ─── Header ──────────────────────────────────────────
+function mkHeader() {
+  const h = div('header');
+  const inner = div('header-inner');
+  if (view === 'list') {
+    const t = div('header-title');
+    t.innerHTML = '<span class="dot"></span> Müslilog';
+    inner.appendChild(t);
+    if (riegel.length) {
+      const c = div('header-count');
+      c.textContent = riegel.length + (riegel.length === 1 ? ' Riegel' : ' Riegel');
+      inner.appendChild(c);
+    }
+  } else {
+    const btn = el('button', 'back-btn');
+    btn.innerHTML = '← Zurück';
+    btn.onclick = goBack;
+    inner.appendChild(btn);
+  }
+  h.appendChild(inner);
+  return h;
+}
+
+// ─── Stats ───────────────────────────────────────────
+function mkStats() {
+  const avg = (riegel.reduce((a,r) => a + r.bewertung, 0) / riegel.length).toFixed(1);
+  const best = riegel.reduce((a,b) => b.bewertung > a.bewertung ? b : a, riegel[0]);
+  const wrap = div('stats page');
+  wrap.innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Durchschnitt</div>
+      <div class="stat-value">${avg} <span>/ 5</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Bester Riegel</div>
+      <div class="stat-value" style="font-size:14px;letter-spacing:-.01em;line-height:1.3;margin-top:2px">${esc(best.name)}</div>
+    </div>`;
+  return wrap;
+}
+
+// ─── List ────────────────────────────────────────────
+function mkList() {
+  const wrap = div('list page');
+  if (!riegel.length) {
+    wrap.innerHTML = `<div class="empty"><div class="empty-icon">🌾</div><div class="empty-title">Noch keine Einträge</div><div class="empty-sub">Tippe auf <strong>+</strong> und scanne deinen ersten Müsliriegel!</div></div>`;
+    return wrap;
+  }
+  riegel.forEach(r => {
+    const card = div('card');
+    const thumb = div('card-thumb');
+    if (r.foto) { const img = el('img'); img.src = r.foto; img.alt = ''; thumb.appendChild(img); }
+    else thumb.textContent = '🍫';
+    const body = div('card-body');
+    body.innerHTML = `
+      <div class="card-top">
+        <div class="card-name">${esc(r.name)}</div>
+        <div class="card-score">${r.bewertung}★</div>
+      </div>
+      ${r.marke ? `<div class="card-brand">${esc(r.marke)}</div>` : ''}
+      <div class="card-meta">
+        ${r.preis ? `<span class="pill pill-green">💰 ${esc(r.preis)}</span>` : ''}
+        ${r.gekauft ? `<span class="pill pill-gray">📍 ${esc(r.gekauft)}</span>` : ''}
+        <span class="card-date">${r.datum}</span>
+      </div>`;
+    card.appendChild(thumb);
+    card.appendChild(body);
+    card.onclick = () => { selectedId = r.id; view = 'detail'; render(); };
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// ─── FAB ─────────────────────────────────────────────
+function mkFab() {
+  const btn = el('button', 'fab');
+  btn.textContent = '+';
+  btn.onclick = () => { form = blank(); editMode = false; view = 'add'; render(); };
+  return btn;
+}
+
+// ─── Form ────────────────────────────────────────────
+function mkForm() {
+  const wrap = div('form-page page');
+
+  const title = div('form-title');
+  title.textContent = editMode ? '✏️ Bearbeiten' : '🆕 Neuer Eintrag';
+  wrap.appendChild(title);
+
+  // Scan button (only for new entries)
+  if (!editMode) {
+    const scanBtn = el('button', 'scan-btn');
+    scanBtn.innerHTML = '<span class="scan-icon">📷</span> Barcode scannen';
+    scanBtn.onclick = openScanner;
+    wrap.appendChild(scanBtn);
+
+    const dividerEl = div('divider');
+    dividerEl.innerHTML = '<span>oder manuell eingeben</span>';
+    wrap.appendChild(dividerEl);
+  }
+
+  // Name
+  wrap.appendChild(mkField('Name *', 'text', 'z.B. Hafer-Schoko-Riegel', 'name'));
+  wrap.appendChild(mkField('Marke', 'text', 'z.B. Nature Valley', 'marke'));
+
+  // Stars
+  const sg = div('field-group');
+  const sl = el('label', 'lbl'); sl.textContent = 'Bewertung *';
+  const sp = div('star-pick');
+  [1,2,3,4,5].forEach(v => {
+    const s = el('span', 'star tap' + (v <= form.bewertung ? ' on' : ''));
+    s.textContent = '★'; s.style.fontSize = '34px';
+    s.onclick = () => { form.bewertung = v; render(); };
+    sp.appendChild(s);
+  });
+  sg.appendChild(sl); sg.appendChild(sp);
+  wrap.appendChild(sg);
+
+  wrap.appendChild(mkField('Preis', 'text', 'z.B. 1,49 €', 'preis'));
+  wrap.appendChild(mkField('Wo gekauft', 'text', 'z.B. Rewe, DM…', 'gekauft'));
+
+  // Notes
+  const ng = div('field-group');
+  const nl = el('label', 'lbl'); nl.textContent = 'Notizen';
+  const ta = el('textarea', 'inp');
+  ta.placeholder = 'Geschmack, Textur, Empfehlung…';
+  ta.value = form.notizen;
+  ta.oninput = e => form.notizen = e.target.value;
+  ng.appendChild(nl); ng.appendChild(ta);
+  wrap.appendChild(ng);
+
+  // Photo
+  const pg = div('field-group');
+  const pl = el('label', 'lbl'); pl.textContent = 'Foto';
+  const pz = div('photo-zone');
+  const fi = el('input');
+  fi.type = 'file'; fi.accept = 'image/*'; fi.capture = 'environment';
+  fi.style.display = 'none';
+  fi.onchange = e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => { form.foto = ev.target.result; render(); };
+    reader.readAsDataURL(file);
+  };
+  if (form.foto) {
+    const img = el('img'); img.src = form.foto; img.alt = '';
+    pz.appendChild(img);
+  } else {
+    pz.innerHTML = '<div class="pz-icon">📷</div><div class="pz-hint">Foto hinzufügen</div>';
+  }
+  pz.onclick = () => fi.click();
+  pg.appendChild(pl); pg.appendChild(pz); pg.appendChild(fi);
+  wrap.appendChild(pg);
+
+  // Save
+  const saveBtn = el('button', 'btn-primary');
+  saveBtn.textContent = editMode ? 'Änderungen speichern' : 'Riegel eintragen ✓';
+  saveBtn.onclick = handleSave;
+  wrap.appendChild(saveBtn);
+
+  const cancelBtn = el('button', 'btn-secondary');
+  cancelBtn.textContent = 'Abbrechen';
+  cancelBtn.onclick = goBack;
+  wrap.appendChild(cancelBtn);
+
+  return wrap;
+}
+
+function mkField(label, type, placeholder, key) {
+  const g = div('field-group');
+  const l = el('label', 'lbl'); l.textContent = label;
+  const i = el('input', 'inp');
+  i.type = type; i.placeholder = placeholder; i.value = form[key] || '';
+  i.oninput = e => form[key] = e.target.value;
+  g.appendChild(l); g.appendChild(i);
+  return g;
+}
+
+function handleSave() {
+  if (!form.name.trim()) { toast('Bitte Name eingeben'); return; }
+  if (!form.bewertung)   { toast('Bitte Bewertung vergeben ★'); return; }
+  if (editMode) {
+    riegel = riegel.map(r => r.id === form.id ? {...form} : r);
+    toast('Gespeichert ✓');
+  } else {
+    riegel.unshift({...form, id: Date.now(), datum: new Date().toLocaleDateString('de-DE')});
+    toast('Eingetragen ✓');
+  }
+  save(); view = 'list'; editMode = false; form = blank(); render();
+}
+
+// ─── Detail ──────────────────────────────────────────
+function mkDetail() {
+  const r = riegel.find(x => x.id === selectedId);
+  if (!r) { view = 'list'; render(); return div(''); }
+
+  const wrap = div('page');
+
+  const hero = div('detail-hero');
+  if (r.foto) { const img = el('img'); img.src = r.foto; img.alt = ''; hero.appendChild(img); }
+  else hero.textContent = '🍫';
+  wrap.appendChild(hero);
+
+  const body = div('detail-body');
+
+  const top = div('detail-top');
+  const name = div('detail-name'); name.textContent = r.name;
+  top.appendChild(name);
+  if (r.marke) {
+    const badge = div('detail-brand-badge'); badge.textContent = r.marke;
+    top.appendChild(badge);
+  }
+  body.appendChild(top);
+
+  const scoreRow = div('detail-score');
+  scoreRow.innerHTML = `<div class="detail-score-num">${r.bewertung}<span>/5</span></div>`;
+  const starsEl = div('stars');
+  starsEl.innerHTML = starsHtml(r.bewertung, 20);
+  scoreRow.appendChild(starsEl);
+  body.appendChild(scoreRow);
+
+  const tags = div('detail-tags');
+  if (r.preis)   tags.innerHTML += `<span class="pill pill-green">💰 ${esc(r.preis)}</span>`;
+  if (r.gekauft) tags.innerHTML += `<span class="pill pill-gray">📍 ${esc(r.gekauft)}</span>`;
+  tags.innerHTML += `<span class="pill pill-gray">📅 ${r.datum}</span>`;
+  body.appendChild(tags);
+
+  if (r.notizen) {
+    const note = div('detail-note');
+    note.textContent = '„' + r.notizen + '"';
+    body.appendChild(note);
+  }
+
+  const editBtn = el('button', 'btn-primary');
+  editBtn.textContent = '✏️ Bearbeiten';
+  editBtn.onclick = () => { form = {...r}; editMode = true; view = 'add'; render(); };
+  body.appendChild(editBtn);
+
+  const delBtn = el('button', 'btn-secondary btn-del');
+  delBtn.textContent = '🗑️ Löschen';
+  delBtn.onclick = () => {
+    if (confirm(`"${r.name}" wirklich löschen?`)) {
+      riegel = riegel.filter(x => x.id !== r.id);
+      save(); view = 'list'; toast('Gelöscht'); render();
+    }
+  };
+  body.appendChild(delBtn);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+// ─── Barcode Scanner ─────────────────────────────────
+function openScanner() {
+  if (scannerOpen) return;
+  scannerOpen = true;
+
+  const overlay = div('scanner-overlay');
+  overlay.id = 'scanner-overlay';
+
+  const header = div('scanner-header');
+  const titleEl = div('scanner-title'); titleEl.textContent = 'Barcode scannen';
+  const closeBtn = el('button', 'scanner-close');
+  closeBtn.textContent = '✕'; closeBtn.onclick = closeScanner;
+  header.appendChild(titleEl); header.appendChild(closeBtn);
+  overlay.appendChild(header);
+
+  const qrDiv = div(''); qrDiv.id = 'qr-reader'; qrDiv.style.flex = '1';
+  overlay.appendChild(qrDiv);
+
+  // Corner frame overlay
+  const frame = div('scanner-frame'); frame.innerHTML = '<span></span>';
+  overlay.appendChild(frame);
+
+  const hint = div('scanner-hint'); hint.textContent = 'Halte den Barcode in den Rahmen';
+  overlay.appendChild(hint);
+
+  document.getElementById('app').appendChild(overlay);
+
+  // Start scanner
+  scanner = new Html5Qrcode('qr-reader');
+  scanner.start(
+    { facingMode: 'environment' },
+    {
+      fps: 15,
+      qrbox: { width: 300, height: 140 },
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+    },
+    async (barcode) => {
+      await closeScanner();
+      await lookupBarcode(barcode);
+    },
+    () => {}
+  ).catch(err => {
+    console.warn('Scanner error:', err);
+    closeScanner();
+    toast('Kamera konnte nicht geöffnet werden');
+  });
+}
+
+async function closeScanner() {
+  if (!scannerOpen) return;
+  scannerOpen = false;
+  try {
+    if (scanner && scanner.isScanning) await scanner.stop();
+  } catch(e) {}
+  scanner = null;
+  const overlay = document.getElementById('scanner-overlay');
+  if (overlay) overlay.remove();
+}
+
+async function lookupBarcode(barcode) {
+  showLoading('Produkt wird gesucht…');
+  try {
+    const res = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
+    const data = await res.json();
+
+    if (data.status !== 1) {
+      hideLoading();
+      toast('Produkt nicht gefunden – bitte manuell eingeben');
+      return;
+    }
+
+    const p = data.product;
+    form.name    = p.product_name_de || p.product_name || '';
+    form.marke   = p.brands || '';
+    if (p.image_front_url || p.image_url) {
+      try {
+        const imgUrl = p.image_front_url || p.image_url;
+        const imgRes = await fetch(imgUrl);
+        const blob = await imgRes.blob();
+        form.foto = await new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onload = e => resolve(e.target.result);
+          reader.readAsDataURL(blob);
+        });
+      } catch(e) { /* foto bleibt null */ }
+    }
+    hideLoading();
+    toast('Produkt gefunden: ' + (form.name || barcode));
+    render();
+  } catch(e) {
+    hideLoading();
+    toast('Fehler beim Abrufen – bitte manuell eingeben');
+  }
+}
+
+function showLoading(text) {
+  const lo = div('loading-overlay'); lo.id = 'loading-overlay';
+  lo.innerHTML = `<div class="spinner"></div><div class="loading-text">${text}</div>`;
+  document.getElementById('app').appendChild(lo);
+}
+function hideLoading() {
+  const lo = document.getElementById('loading-overlay');
+  if (lo) lo.remove();
+}
+
+// ─── Helpers ─────────────────────────────────────────
+function starsHtml(v, size) {
+  return [1,2,3,4,5].map(s =>
+    `<span class="star ${s<=v?'on':''}" style="font-size:${size}px">★</span>`
+  ).join('');
+}
+
+function div(cls) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  return d;
+}
+function el(tag, cls) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+function toast(msg) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  clearTimeout(toastTimer);
+  const t = div('toast'); t.textContent = msg;
+  document.body.appendChild(t);
+  toastTimer = setTimeout(() => t.remove(), 2400);
+}
+
+// ─── Service Worker ───────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+// ─── Boot ─────────────────────────────────────────────
+render();
+</script>
+</body>
+</html>
