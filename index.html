@@ -558,44 +558,51 @@ function zxingDecode(canvas) {
 }
 
 async function decodeBarcode(file) {
-  const original = await loadImageCanvas(file, 1920);
+  // Load at native resolution first, then scale per strategy
+  const full = await loadImageCanvas(file, 9999);
+
+  // Proven by testing: ZXing on iOS needs the image at ~600px wide to reliably
+  // scan every row. Larger = too few rows sampled. Smaller = bars too narrow.
+  function to600(src) {
+    const scale = 600 / src.width;
+    return scaleCanvas(src, 600, Math.round(src.height * scale));
+  }
 
   const strategies = [
-    () => original,
-    () => unsharpMask(original, 1.5),
-    () => unsharpMask(original, 3.0),
-    () => cropRegion(original, 0.0, 0.35, 1.0, 0.65),
-    () => unsharpMask(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 2.0),
-    () => cropCenter(original, 1.0, 0.5),
-    () => unsharpMask(cropCenter(original, 1.0, 0.5), 2.0),
-    () => upscale(cropCenter(original, 1.0, 0.4), 2),
-    () => unsharpMask(upscale(cropCenter(original, 1.0, 0.4), 2), 1.5),
-    () => upscale(original, 1.5),
-    () => preprocessCanvas(original, 'contrast'),
-    () => preprocessCanvas(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 'contrast'),
-    () => preprocessCanvas(original, 'threshold'),
-    () => rotate(original, 90),
-    () => rotate(original, 270),
-    () => unsharpMask(rotate(original, 90), 2.0),
-    () => rotateSmall(original, 10),  () => rotateSmall(original, -10),
-    () => rotateSmall(original, 20),  () => rotateSmall(original, -20),
+    () => to600(full),
+    () => to600(cropRegion(full, 0, 0.3,  1, 0.7)),
+    () => to600(cropRegion(full, 0, 0.35, 1, 0.65)),
+    () => to600(cropRegion(full, 0, 0.25, 1, 0.75)),
+    () => to600(cropRegion(full, 0, 0.4,  1, 0.6)),
+    () => to600(cropRegion(full, 0, 0.0,  1, 0.5)),
+    () => to600(cropRegion(full, 0, 0.5,  1, 1.0)),
+    () => to600(rotate(full, 90)),
+    () => to600(rotate(full, 270)),
+    () => to600(rotate(cropRegion(full, 0, 0.3, 1, 0.7), 90)),
+    () => preprocessCanvas(to600(full), 'contrast'),
+    () => preprocessCanvas(to600(cropRegion(full, 0, 0.3, 1, 0.7)), 'contrast'),
+    () => unsharpMask(to600(full), 1.5),
+    () => unsharpMask(to600(cropRegion(full, 0, 0.3, 1, 0.7)), 2.0),
+    () => to600(rotateSmall(full, 10)),
+    () => to600(rotateSmall(full, -10)),
   ];
 
   for (const strategy of strategies) {
     try {
       const result = zxingDecode(strategy());
-      if (result) {
-        console.log('✓ Barcode:', result.getText());
-        return result.getText();
-      }
+      if (result) { console.log('✓ Barcode:', result.getText()); return result.getText(); }
     } catch(e) {
-      // NotFoundException = normal, try next. Log unexpected errors.
-      if (e && e.name !== 'NotFoundException') {
-        console.warn('Strategy error:', e.name, e.message);
-      }
+      if (e && e.name !== 'NotFoundException') console.warn('Strategy error:', e.name, e.message);
     }
   }
   return null;
+}
+
+function scaleCanvas(src, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').drawImage(src, 0, 0, w, h);
+  return c;
 }
 
 // Real unsharp mask using canvas blur (NOT CSS filter — actually changes pixels)
@@ -630,17 +637,15 @@ function unsharpMask(src, amount) {
   return out;
 }
 
-// Load file correcting EXIF, scale longest side to maxPx (1200 = sweet spot for ZXing)
-async function loadImageCanvas(file, maxWidth) {
+// Load file correcting EXIF orientation, scale longest side to maxPx (pass 9999 to keep full size)
+async function loadImageCanvas(file, maxPx) {
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch(e) {
     bitmap = await createImageBitmap(file);
   }
-  // Always scale down to max 1200px — iPhone shoots at 3024x4032 which is too large for ZXing
-  const limit = Math.min(maxWidth, 1200);
-  const scale = Math.min(1, limit / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width  * scale);
   const h = Math.round(bitmap.height * scale);
   const c = document.createElement('canvas');
