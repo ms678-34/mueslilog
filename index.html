@@ -132,6 +132,12 @@
     .sync-dot.ok  { background: var(--accent); }
     .sync-dot.err { background: var(--red); }
 
+    /* ── SORT BAR ── */
+    .sort-bar { display: flex; gap: 6px; padding: 10px 16px 2px; overflow-x: auto; scrollbar-width: none; }
+    .sort-bar::-webkit-scrollbar { display: none; }
+    .sort-chip { flex-shrink: 0; font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 20px; border: 1.5px solid var(--border); background: var(--surface); color: var(--sub); cursor: pointer; white-space: nowrap; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+    .sort-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
     .page { animation: fadeUp .2s ease; }
     @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } }
   </style>
@@ -142,14 +148,15 @@
 <!-- Firebase SDK (compat) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <!-- Quagga2 for barcode decoding -->
 <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
 
 <script>
 // ══════════════════════════════════════════════════════
 //  🔥 FIREBASE KONFIGURATION
-//  → console.firebase.google.com → Projekt → Einstellungen
-//    → "Deine Apps" → Web-App → firebaseConfig kopieren
+//  Der API Key ist durch HTTP-Referrer-Beschränkungen
+//  auf deine Domain limitiert (siehe Anleitung unten).
 // ══════════════════════════════════════════════════════
 const FIREBASE_CONFIG = {
   apiKey:            "AIzaSyC1OKKFjAFaQl9CKqNOncN9MqpDJk7OuRQ",
@@ -175,12 +182,14 @@ window.onerror = (msg, src, line) => {
 };
 
 // Firebase init — wrapped so a load failure never crashes the page
-let db = null;
+let db   = null;
+let auth = null;
 if (USE_DB) {
   try {
     if (typeof firebase === 'undefined') throw new Error('Firebase SDK nicht geladen – Netzwerkproblem?');
     firebase.initializeApp(FIREBASE_CONFIG);
-    db = firebase.firestore();
+    db   = firebase.firestore();
+    auth = firebase.auth();
   } catch(e) {
     console.error('Firebase init:', e);
   }
@@ -225,6 +234,7 @@ let selectedId = null;
 let editMode  = false;
 let form      = blank();
 let toastTimer = null;
+let sortKey   = 'bewertung_desc'; // default: Bewertung absteigend
 
 function blank() { return { name:'', marke:'', bewertung:0, preis:'', gekauft:'', notizen:'', foto:null }; }
 function lsSave() { try { localStorage.setItem(LS, JSON.stringify(riegel)); } catch(e) {} }
@@ -237,8 +247,18 @@ async function boot() {
     render();
     return;
   }
+  // Show local data immediately while we authenticate
   riegel = lsLoad();
   render();
+  // Sign in anonymously — required by Firestore security rules
+  // Silent and automatic, user sees nothing
+  try {
+    if (auth && !auth.currentUser) {
+      await auth.signInAnonymously();
+    }
+  } catch(e) {
+    console.warn('Auth error:', e);
+  }
   try {
     riegel = await dbLoad();
     lsSave();
@@ -266,7 +286,7 @@ function render() {
     return;
   }
   app.appendChild(mkHeader());
-  if      (view === 'list')   { if (riegel.length) app.appendChild(mkStats()); app.appendChild(mkList()); app.appendChild(mkFab()); }
+  if      (view === 'list')   { if (riegel.length) { app.appendChild(mkStats()); app.appendChild(mkSortBar()); } app.appendChild(mkList()); app.appendChild(mkFab()); }
   else if (view === 'add')    { app.appendChild(mkForm()); }
   else if (view === 'detail') { app.appendChild(mkDetail()); }
 }
@@ -359,6 +379,48 @@ function mkStats() {
   return w;
 }
 
+// ─── Sort ─────────────────────────────────────────────
+const SORT_OPTIONS = [
+  { key: 'bewertung_desc', label: '★ Beste zuerst' },
+  { key: 'bewertung_asc',  label: '★ Schlechteste zuerst' },
+  { key: 'preis_asc',      label: '💰 Preis aufsteigend' },
+  { key: 'preis_desc',     label: '💰 Preis absteigend' },
+  { key: 'gekauft_asc',    label: '📍 Ort A–Z' },
+  { key: 'datum_desc',     label: '🕐 Neueste zuerst' },
+  { key: 'datum_asc',      label: '🕐 Älteste zuerst' },
+];
+
+function parsePreis(str) {
+  if (!str) return Infinity;
+  const n = parseFloat(str.replace(',', '.').replace(/[^0-9.]/g, ''));
+  return isNaN(n) ? Infinity : n;
+}
+
+function sortedRiegel() {
+  const arr = [...riegel];
+  switch (sortKey) {
+    case 'bewertung_desc': return arr.sort((a,b) => b.bewertung - a.bewertung);
+    case 'bewertung_asc':  return arr.sort((a,b) => a.bewertung - b.bewertung);
+    case 'preis_asc':      return arr.sort((a,b) => parsePreis(a.preis) - parsePreis(b.preis));
+    case 'preis_desc':     return arr.sort((a,b) => parsePreis(b.preis) - parsePreis(a.preis));
+    case 'gekauft_asc':    return arr.sort((a,b) => (a.gekauft||'').localeCompare(b.gekauft||'', 'de'));
+    case 'datum_desc':     return arr.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+    case 'datum_asc':      return arr.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
+    default: return arr;
+  }
+}
+
+function mkSortBar() {
+  const bar = div('sort-bar');
+  SORT_OPTIONS.forEach(opt => {
+    const chip = div('sort-chip' + (sortKey === opt.key ? ' active' : ''));
+    chip.textContent = opt.label;
+    chip.onclick = () => { sortKey = opt.key; render(); };
+    bar.appendChild(chip);
+  });
+  return bar;
+}
+
 // ─── List ─────────────────────────────────────────────
 function mkList() {
   const wrap = div('list page');
@@ -366,7 +428,7 @@ function mkList() {
     wrap.innerHTML = `<div class="empty"><div class="empty-icon">🌾</div><div class="empty-title">Noch keine Einträge</div><div class="empty-sub">Tippe auf <strong>+</strong> und scanne deinen ersten Müsliriegel!</div></div>`;
     return wrap;
   }
-  riegel.forEach(r => {
+  sortedRiegel().forEach(r => {
     const card = div('card');
     const thumb = div('card-thumb');
     if (r.foto) { const img=el('img'); img.src=r.foto; img.alt=''; thumb.appendChild(img); }
