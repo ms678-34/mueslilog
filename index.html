@@ -535,8 +535,33 @@ async function handleBarcodeImage(file) {
   }
 }
 
-// iOS Safari: decodeFromCanvas does NOT exist on BrowserMultiFormatReader.
-// Only path that works: RGBLuminanceSource → BinaryBitmap → MultiFormatReader.decode()
+// Load file via FileReader + Image element, draw DIRECTLY to target size canvas.
+// Never creates a large intermediate canvas — avoids iOS Safari 16MP canvas limit.
+function loadAs600Canvas(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const TARGET_W = 600;
+        const scale = TARGET_W / img.naturalWidth;
+        const w = TARGET_W;
+        const h = Math.round(img.naturalHeight * scale);
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(c);
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ZXing decode using RGBLuminanceSource — the only path that works on iOS Safari.
+// (BrowserMultiFormatReader.decodeFromCanvas does not exist on iOS Safari)
 function zxingDecode(canvas) {
   const ctx = canvas.getContext('2d');
   const { width, height } = canvas;
@@ -558,188 +583,69 @@ function zxingDecode(canvas) {
 }
 
 async function decodeBarcode(file) {
-  // Load at native resolution first, then scale per strategy
-  const full = await loadImageCanvas(file, 9999);
+  // Step 1: load directly into a 600px canvas (no large intermediate canvas)
+  const base = await loadAs600Canvas(file);
+  const w = base.width, h = base.height;
 
-  // Proven by testing: ZXing on iOS needs the image at ~600px wide to reliably
-  // scan every row. Larger = too few rows sampled. Smaller = bars too narrow.
-  function to600(src) {
-    const scale = 600 / src.width;
-    return scaleCanvas(src, 600, Math.round(src.height * scale));
+  // Helper: crop a sub-region of the base canvas into a new canvas
+  function cropY(y0frac, y1frac) {
+    const y0 = Math.round(h * y0frac);
+    const y1 = Math.round(h * y1frac);
+    const ch = y1 - y0;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = ch;
+    c.getContext('2d').drawImage(base, 0, y0, w, ch, 0, 0, w, ch);
+    return c;
   }
 
+  // Helper: rotate base canvas and return new canvas
+  function rot(deg) {
+    const rad = deg * Math.PI / 180;
+    const rw = (deg === 90 || deg === 270) ? h : w;
+    const rh = (deg === 90 || deg === 270) ? w : h;
+    const c = document.createElement('canvas');
+    c.width = rw; c.height = rh;
+    const ctx = c.getContext('2d');
+    ctx.translate(rw / 2, rh / 2);
+    ctx.rotate(rad);
+    ctx.drawImage(base, -w / 2, -h / 2);
+    return c;
+  }
+
+  // Step 2: try strategies in order — all operate on the 600px base canvas
   const strategies = [
-    () => to600(full),
-    () => to600(cropRegion(full, 0, 0.3,  1, 0.7)),
-    () => to600(cropRegion(full, 0, 0.35, 1, 0.65)),
-    () => to600(cropRegion(full, 0, 0.25, 1, 0.75)),
-    () => to600(cropRegion(full, 0, 0.4,  1, 0.6)),
-    () => to600(cropRegion(full, 0, 0.0,  1, 0.5)),
-    () => to600(cropRegion(full, 0, 0.5,  1, 1.0)),
-    () => to600(rotate(full, 90)),
-    () => to600(rotate(full, 270)),
-    () => to600(rotate(cropRegion(full, 0, 0.3, 1, 0.7), 90)),
-    () => preprocessCanvas(to600(full), 'contrast'),
-    () => preprocessCanvas(to600(cropRegion(full, 0, 0.3, 1, 0.7)), 'contrast'),
-    () => unsharpMask(to600(full), 1.5),
-    () => unsharpMask(to600(cropRegion(full, 0, 0.3, 1, 0.7)), 2.0),
-    () => to600(rotateSmall(full, 10)),
-    () => to600(rotateSmall(full, -10)),
+    () => base,                         // full image
+    () => cropY(0.25, 0.75),            // center half
+    () => cropY(0.30, 0.70),            // center 40%
+    () => cropY(0.35, 0.65),            // center 30%
+    () => cropY(0.40, 0.60),            // tight center
+    () => cropY(0.0,  0.50),            // top half
+    () => cropY(0.50, 1.0),             // bottom half
+    () => rot(90),                      // landscape left
+    () => rot(270),                     // landscape right
+    () => rot(180),                     // upside down
   ];
 
   for (const strategy of strategies) {
     try {
       const result = zxingDecode(strategy());
-      if (result) { console.log('✓ Barcode:', result.getText()); return result.getText(); }
+      if (result) {
+        console.log('✓ Barcode:', result.getText());
+        return result.getText();
+      }
     } catch(e) {
-      if (e && e.name !== 'NotFoundException') console.warn('Strategy error:', e.name, e.message);
+      if (e?.name !== 'NotFoundException') {
+        console.warn('ZXing error:', e?.name, e?.message);
+      }
     }
   }
   return null;
 }
 
-function scaleCanvas(src, w, h) {
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  c.getContext('2d').drawImage(src, 0, 0, w, h);
-  return c;
-}
 
-// Real unsharp mask using canvas blur (NOT CSS filter — actually changes pixels)
-function unsharpMask(src, amount) {
-  const w = src.width, h = src.height;
 
-  // Draw blurred version
-  const blurCanvas = document.createElement('canvas');
-  blurCanvas.width = w; blurCanvas.height = h;
-  const bctx = blurCanvas.getContext('2d');
-  bctx.filter = 'blur(2px)';
-  bctx.drawImage(src, 0, 0);
 
-  // Get pixel data from both
-  const srcCtx = src.getContext('2d');
-  const origData = srcCtx.getImageData(0, 0, w, h);
-  const blurData = bctx.getImageData(0, 0, w, h);
 
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const outCtx = out.getContext('2d');
-  const outData = outCtx.createImageData(w, h);
-
-  const scale = 1 + amount;
-  for (let i = 0; i < origData.data.length; i += 4) {
-    outData.data[i]   = Math.min(255, Math.max(0, origData.data[i]   * scale - blurData.data[i]   * amount));
-    outData.data[i+1] = Math.min(255, Math.max(0, origData.data[i+1] * scale - blurData.data[i+1] * amount));
-    outData.data[i+2] = Math.min(255, Math.max(0, origData.data[i+2] * scale - blurData.data[i+2] * amount));
-    outData.data[i+3] = 255;
-  }
-  outCtx.putImageData(outData, 0, 0);
-  return out;
-}
-
-// Load file correcting EXIF orientation, scale longest side to maxPx (pass 9999 to keep full size)
-async function loadImageCanvas(file, maxPx) {
-  let bitmap;
-  try {
-    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  } catch(e) {
-    bitmap = await createImageBitmap(file);
-  }
-  const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
-  const w = Math.round(bitmap.width  * scale);
-  const h = Math.round(bitmap.height * scale);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  c.getContext('2d').drawImage(bitmap, 0, 0, w, h);
-  bitmap.close?.();
-  return c;
-}
-
-// Preprocess: boost contrast, apply threshold, or invert
-function preprocessCanvas(src, mode) {
-  const c = document.createElement('canvas');
-  c.width = src.width; c.height = src.height;
-  const ctx = c.getContext('2d');
-
-  if (mode === 'contrast') {
-    // High contrast via CSS filter
-    ctx.filter = 'contrast(200%) brightness(110%)';
-    ctx.drawImage(src, 0, 0);
-    ctx.filter = 'none';
-  } else if (mode === 'threshold') {
-    // Manual binarization — converts to pure black/white
-    ctx.drawImage(src, 0, 0);
-    const d = ctx.getImageData(0, 0, c.width, c.height);
-    for (let i = 0; i < d.data.length; i += 4) {
-      const lum = 0.299*d.data[i] + 0.587*d.data[i+1] + 0.114*d.data[i+2];
-      const v = lum > 128 ? 255 : 0;
-      d.data[i] = d.data[i+1] = d.data[i+2] = v;
-    }
-    ctx.putImageData(d, 0, 0);
-  } else if (mode === 'invert') {
-    ctx.filter = 'invert(100%)';
-    ctx.drawImage(src, 0, 0);
-    ctx.filter = 'none';
-  }
-  return c;
-}
-
-// Crop center strip: fracW and fracH as fraction of original
-function cropCenter(src, fracW, fracH) {
-  const cw = Math.round(src.width  * fracW);
-  const ch = Math.round(src.height * fracH);
-  const x  = Math.round((src.width  - cw) / 2);
-  const y  = Math.round((src.height - ch) / 2);
-  return cropRegion(src, x/src.width, y/src.height, (x+cw)/src.width, (y+ch)/src.height);
-}
-
-// Crop by relative coordinates (0..1)
-function cropRegion(src, x0, y0, x1, y1) {
-  const x  = Math.round(src.width  * x0);
-  const y  = Math.round(src.height * y0);
-  const cw = Math.round(src.width  * (x1 - x0));
-  const ch = Math.round(src.height * (y1 - y0));
-  const c = document.createElement('canvas');
-  c.width = cw; c.height = ch;
-  c.getContext('2d').drawImage(src, x, y, cw, ch, 0, 0, cw, ch);
-  return c;
-}
-
-// Rotate 90/180/270
-function rotate(src, deg) {
-  const rad = deg * Math.PI / 180;
-  const sw = src.width, sh = src.height;
-  const rw = (deg === 90 || deg === 270) ? sh : sw;
-  const rh = (deg === 90 || deg === 270) ? sw : sh;
-  const c = document.createElement('canvas');
-  c.width = rw; c.height = rh;
-  const ctx = c.getContext('2d');
-  ctx.translate(rw/2, rh/2);
-  ctx.rotate(rad);
-  ctx.drawImage(src, -sw/2, -sh/2);
-  return c;
-}
-
-// Small angle rotation (handles slightly tilted barcodes)
-function rotateSmall(src, deg) {
-  const rad = deg * Math.PI / 180;
-  const c = document.createElement('canvas');
-  c.width = src.width; c.height = src.height;
-  const ctx = c.getContext('2d');
-  ctx.translate(src.width/2, src.height/2);
-  ctx.rotate(rad);
-  ctx.drawImage(src, -src.width/2, -src.height/2);
-  return c;
-}
-
-// Upscale canvas by factor
-function upscale(src, factor) {
-  const c = document.createElement('canvas');
-  c.width = Math.round(src.width * factor);
-  c.height = Math.round(src.height * factor);
-  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-  return c;
-}
 
 async function lookupBarcode(barcode) {
   showLoading('Produkt wird gesucht…');
