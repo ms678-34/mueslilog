@@ -535,33 +535,8 @@ async function handleBarcodeImage(file) {
   }
 }
 
-// Load file via FileReader + Image element, draw DIRECTLY to target size canvas.
-// Never creates a large intermediate canvas — avoids iOS Safari 16MP canvas limit.
-function loadAs600Canvas(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onerror = reject;
-      img.onload = () => {
-        const TARGET_W = 600;
-        const scale = TARGET_W / img.naturalWidth;
-        const w = TARGET_W;
-        const h = Math.round(img.naturalHeight * scale);
-        const c = document.createElement('canvas');
-        c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(c);
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-// ZXing decode using RGBLuminanceSource — the only path that works on iOS Safari.
-// (BrowserMultiFormatReader.decodeFromCanvas does not exist on iOS Safari)
+// ZXing decode — RGBLuminanceSource is the only path that works on iOS Safari.
+// BrowserMultiFormatReader.decodeFromCanvas does not exist on iOS Safari.
 function zxingDecode(canvas) {
   const ctx = canvas.getContext('2d');
   const { width, height } = canvas;
@@ -582,63 +557,94 @@ function zxingDecode(canvas) {
   return reader.decode(bmp);
 }
 
+// Load image via FileReader+Image (most compatible on iOS, no large intermediate canvas)
+function loadOriginalImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = ev => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => resolve(img);
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Crop a vertical strip from the original image and scale so HEIGHT = targetH.
+// This makes the barcode LARGER in the canvas — the key insight.
+// (Scaling by width first then cropping makes barcode smaller — wrong approach)
+function cropAndScaleH(img, y0frac, y1frac, targetH) {
+  const srcW = img.naturalWidth;
+  const srcH = img.naturalHeight;
+  const srcY  = Math.round(srcH * y0frac);
+  const cropH = Math.round(srcH * (y1frac - y0frac));
+  const scale  = targetH / cropH;
+  const canvasW = Math.round(srcW * scale);
+  const c = document.createElement('canvas');
+  c.width = canvasW; c.height = targetH;
+  c.getContext('2d').drawImage(img, 0, srcY, srcW, cropH, 0, 0, canvasW, targetH);
+  return c;
+}
+
+// Rotate image element into a canvas (for landscape photos)
+function rotateImage(img, deg) {
+  const srcW = img.naturalWidth, srcH = img.naturalHeight;
+  const rw = (deg === 90 || deg === 270) ? srcH : srcW;
+  const rh = (deg === 90 || deg === 270) ? srcW : srcH;
+  const c = document.createElement('canvas');
+  c.width = rw; c.height = rh;
+  const ctx = c.getContext('2d');
+  ctx.translate(rw/2, rh/2);
+  ctx.rotate(deg * Math.PI / 180);
+  ctx.drawImage(img, -srcW/2, -srcH/2);
+  return c;
+}
+
+// Crop+scale from a canvas (used after rotation)
+function cropCanvasAndScaleH(src, y0frac, y1frac, targetH) {
+  const srcW = src.width, srcH = src.height;
+  const srcY  = Math.round(srcH * y0frac);
+  const cropH = Math.round(srcH * (y1frac - y0frac));
+  const scale  = targetH / cropH;
+  const canvasW = Math.round(srcW * scale);
+  const c = document.createElement('canvas');
+  c.width = canvasW; c.height = targetH;
+  c.getContext('2d').drawImage(src, 0, srcY, srcW, cropH, 0, 0, canvasW, targetH);
+  return c;
+}
+
 async function decodeBarcode(file) {
-  // Step 1: load directly into a 600px canvas (no large intermediate canvas)
-  const base = await loadAs600Canvas(file);
-  const w = base.width, h = base.height;
+  const img = await loadOriginalImage(file);
 
-  // Helper: crop a sub-region of the base canvas into a new canvas
-  function cropY(y0frac, y1frac) {
-    const y0 = Math.round(h * y0frac);
-    const y1 = Math.round(h * y1frac);
-    const ch = y1 - y0;
-    const c = document.createElement('canvas');
-    c.width = w; c.height = ch;
-    c.getContext('2d').drawImage(base, 0, y0, w, ch, 0, 0, w, ch);
-    return c;
-  }
+  // Strategy: crop vertical strip from ORIGINAL, then scale to height=600.
+  // Narrower strips → wider canvas → barcode bars are larger → ZXing succeeds.
+  // Tested and confirmed working at iPhone 13 mini resolution (3024x4032).
+  const H = 600;
+  const strips = [[0,1], [0.25,0.75], [0.3,0.7], [0.35,0.65], [0.4,0.6],
+                  [0,0.5], [0.5,1], [0.2,0.8]];
 
-  // Helper: rotate base canvas and return new canvas
-  function rot(deg) {
-    const rad = deg * Math.PI / 180;
-    const rw = (deg === 90 || deg === 270) ? h : w;
-    const rh = (deg === 90 || deg === 270) ? w : h;
-    const c = document.createElement('canvas');
-    c.width = rw; c.height = rh;
-    const ctx = c.getContext('2d');
-    ctx.translate(rw / 2, rh / 2);
-    ctx.rotate(rad);
-    ctx.drawImage(base, -w / 2, -h / 2);
-    return c;
-  }
-
-  // Step 2: try strategies in order — all operate on the 600px base canvas
-  const strategies = [
-    () => base,                         // full image
-    () => cropY(0.25, 0.75),            // center half
-    () => cropY(0.30, 0.70),            // center 40%
-    () => cropY(0.35, 0.65),            // center 30%
-    () => cropY(0.40, 0.60),            // tight center
-    () => cropY(0.0,  0.50),            // top half
-    () => cropY(0.50, 1.0),             // bottom half
-    () => rot(90),                      // landscape left
-    () => rot(270),                     // landscape right
-    () => rot(180),                     // upside down
-  ];
-
-  for (const strategy of strategies) {
+  // Portrait strategies
+  for (const [y0, y1] of strips) {
     try {
-      const result = zxingDecode(strategy());
-      if (result) {
-        console.log('✓ Barcode:', result.getText());
-        return result.getText();
-      }
-    } catch(e) {
-      if (e?.name !== 'NotFoundException') {
-        console.warn('ZXing error:', e?.name, e?.message);
-      }
+      const result = zxingDecode(cropAndScaleH(img, y0, y1, H));
+      if (result) { console.log('✓', result.getText()); return result.getText(); }
+    } catch(e) { if (e?.name !== 'NotFoundException') console.warn(e?.name, e?.message); }
+  }
+
+  // Landscape strategies (photo taken sideways)
+  const rot90  = rotateImage(img, 90);
+  const rot270 = rotateImage(img, 270);
+  for (const rotated of [rot90, rot270]) {
+    for (const [y0, y1] of strips.slice(0, 4)) {
+      try {
+        const result = zxingDecode(cropCanvasAndScaleH(rotated, y0, y1, H));
+        if (result) { console.log('✓ rotated', result.getText()); return result.getText(); }
+      } catch(e) { if (e?.name !== 'NotFoundException') console.warn(e?.name, e?.message); }
     }
   }
+
   return null;
 }
 
