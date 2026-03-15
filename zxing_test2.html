@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZXing Diagnostic v2</title>
+<style>
+  body { font-family: sans-serif; padding: 16px; font-size: 13px; }
+  pre { background: #f0f0f0; padding: 10px; white-space: pre-wrap; word-break: break-all; margin: 8px 0; }
+  img { border: 1px solid #ccc; max-width: 100%; }
+  h3 { margin: 12px 0 4px; }
+</style>
+</head>
+<body>
+<h2>ZXing Diagnostic v2</h2>
+<input type="file" id="f" accept="image/*" capture="environment"><br><br>
+<div id="out"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.2/umd/index.min.js"></script>
+<script>
+function log(msg, el) {
+  const p = document.createElement('pre');
+  p.textContent = msg;
+  (el || document.getElementById('out')).appendChild(p);
+}
+function showCanvas(canvas, label, container) {
+  const h3 = document.createElement('h3'); h3.textContent = label;
+  (container || document.getElementById('out')).appendChild(h3);
+  const img = document.createElement('img');
+  img.src = canvas.toDataURL('image/jpeg', 0.7);
+  img.style.maxHeight = '200px';
+  (container || document.getElementById('out')).appendChild(img);
+}
+
+function zxingDecode(canvas) {
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const lum = new ZXing.RGBLuminanceSource(imgData.data, canvas.width, canvas.height);
+  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+  const hints = new Map([
+    [ZXing.DecodeHintType.TRY_HARDER, true],
+    [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A,  ZXing.BarcodeFormat.UPC_E,
+      ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+    ]],
+  ]);
+  const reader = new ZXing.MultiFormatReader();
+  reader.setHints(hints);
+  return reader.decode(bmp);
+}
+
+document.getElementById('f').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const out = document.getElementById('out');
+  out.innerHTML = '';
+  log(`File: ${file.name}, size: ${(file.size/1024).toFixed(0)}KB`);
+
+  // Method A: FileReader + Image element
+  log('\n--- Method A: FileReader + Image ---');
+  await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        log(`img.naturalWidth=${img.naturalWidth}, img.naturalHeight=${img.naturalHeight}`);
+        
+        // Draw to 600px wide canvas
+        const scale = 600 / img.naturalWidth;
+        const c = document.createElement('canvas');
+        c.width = 600;
+        c.height = Math.round(img.naturalHeight * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        log(`Canvas A: ${c.width}x${c.height}`);
+        showCanvas(c, `Canvas A (600x${c.height})`);
+        
+        try {
+          const result = zxingDecode(c);
+          log(`ZXing A: ✓ ${result.getText()}`);
+        } catch(err) {
+          log(`ZXing A FAIL: ${err.name}: ${err.message}`);
+        }
+
+        // Also try 600px on the OTHER dimension (handles EXIF rotation)
+        const scale2 = 600 / img.naturalHeight;
+        const c2 = document.createElement('canvas');
+        c2.width = Math.round(img.naturalWidth * scale2);
+        c2.height = 600;
+        c2.getContext('2d').drawImage(img, 0, 0, c2.width, c2.height);
+        log(`Canvas A2: ${c2.width}x${c2.height}`);
+        showCanvas(c2, `Canvas A2 (${c2.width}x600)`);
+        try {
+          const result2 = zxingDecode(c2);
+          log(`ZXing A2: ✓ ${result2.getText()}`);
+        } catch(err) {
+          log(`ZXing A2 FAIL: ${err.name}: ${err.message}`);
+        }
+        resolve();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // Method B: createImageBitmap  
+  log('\n--- Method B: createImageBitmap ---');
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    log(`bitmap.width=${bitmap.width}, bitmap.height=${bitmap.height}`);
+    const scale = 600 / bitmap.width;
+    const c = document.createElement('canvas');
+    c.width = 600;
+    c.height = Math.round(bitmap.height * scale);
+    c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
+    bitmap.close?.();
+    log(`Canvas B: ${c.width}x${c.height}`);
+    showCanvas(c, `Canvas B (600x${c.height})`);
+    try {
+      const result = zxingDecode(c);
+      log(`ZXing B: ✓ ${result.getText()}`);
+    } catch(err) {
+      log(`ZXing B FAIL: ${err.name}: ${err.message}`);
+    }
+  } catch(err) {
+    log(`createImageBitmap error: ${err.message}`);
+  }
+};
+</script>
+</body>
+</html>
