@@ -511,24 +511,126 @@ function mkDetail() {
 }
 
 // ─── Barcode ──────────────────────────────────────────
+
+// Main entry point: file → fix EXIF → try multiple strategies → lookup
 async function handleBarcodeImage(file) {
   const btn = document.getElementById('scan-btn');
-  if (btn) { btn.classList.add('loading'); btn.innerHTML='<span>⏳</span> Dekodieren…'; }
+  const setBtn = (txt) => { if (!btn) return; btn.classList.toggle('loading', txt !== null); btn.innerHTML = txt || '<span>📷</span> Barcode scannen'; };
+  setBtn('<span>⏳</span> Bild wird analysiert…');
+
   try {
-    const dataUrl = await fileToDataUrl(file);
-    const img = new Image();
-    await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=dataUrl; });
-    const canvas = document.createElement('canvas');
-    canvas.width=img.naturalWidth; canvas.height=img.naturalHeight;
-    canvas.getContext('2d').drawImage(img,0,0);
-    const reader = new ZXing.BrowserMultiFormatReader();
-    const result = reader.decodeFromCanvas(canvas);
-    if (btn) { btn.classList.remove('loading'); btn.innerHTML='<span>📷</span> Barcode scannen'; }
-    await lookupBarcode(result.getText());
+    // 1. Draw image to canvas with EXIF rotation corrected
+    const canvas = await imageFileToCanvas(file, 1280);
+
+    // 2. Try scanning with multiple strategies
+    const code = await tryDecodeStrategies(canvas);
+
+    setBtn(null);
+    if (code) {
+      await lookupBarcode(code);
+    } else {
+      toast('Kein Barcode erkannt – näher herangehen oder bessere Beleuchtung');
+    }
   } catch(e) {
-    if (btn) { btn.classList.remove('loading'); btn.innerHTML='<span>📷</span> Barcode scannen'; }
-    toast(e?.name==='NotFoundException' ? 'Kein Barcode erkannt – nochmal versuchen' : 'Fehler beim Lesen');
+    console.error('Barcode error:', e);
+    setBtn(null);
+    toast('Fehler beim Verarbeiten des Fotos');
   }
+}
+
+// Load image file into canvas, correcting EXIF orientation
+async function imageFileToCanvas(file, maxWidth) {
+  // createImageBitmap respects EXIF orientation in modern browsers (incl. iOS 15+)
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch(e) {
+    // Fallback: load as data URL (no EXIF correction, but better than nothing)
+    bitmap = await createImageBitmap(file);
+  }
+
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const w = Math.round(bitmap.width  * scale);
+  const h = Math.round(bitmap.height * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+  return canvas;
+}
+
+// Try multiple decode strategies, return barcode string or null
+async function tryDecodeStrategies(canvas) {
+  const reader = new ZXing.BrowserMultiFormatReader();
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext('2d');
+
+  // Helper: decode a canvas, return string or null
+  function tryDecode(c) {
+    try { return reader.decodeFromCanvas(c).getText(); } catch(e) { return null; }
+  }
+
+  // Helper: extract a sub-region into a new canvas
+  function crop(x, y, cw, ch) {
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    c.getContext('2d').drawImage(canvas, x, y, cw, ch, 0, 0, cw, ch);
+    return c;
+  }
+
+  // Helper: rotate a canvas by degrees
+  function rotate(src, deg) {
+    const rad = deg * Math.PI / 180;
+    const sw = src.width, sh = src.height;
+    const rw = deg === 90 || deg === 270 ? sh : sw;
+    const rh = deg === 90 || deg === 270 ? sw : sh;
+    const c = document.createElement('canvas');
+    c.width = rw; c.height = rh;
+    const cx = c.getContext('2d');
+    cx.translate(rw/2, rh/2);
+    cx.rotate(rad);
+    cx.drawImage(src, -sw/2, -sh/2);
+    return c;
+  }
+
+  // Strategy 1: full image as-is
+  let code = tryDecode(canvas);
+  if (code) return code;
+
+  // Strategy 2: center horizontal strip (barcode usually in middle of frame)
+  const stripH = Math.round(h * 0.4);
+  const stripY = Math.round(h * 0.3);
+  code = tryDecode(crop(0, stripY, w, stripH));
+  if (code) return code;
+
+  // Strategy 3: center vertical strip (for portrait-held phone)
+  const stripW = Math.round(w * 0.5);
+  const stripX = Math.round(w * 0.25);
+  code = tryDecode(crop(stripX, 0, stripW, h));
+  if (code) return code;
+
+  // Strategy 4: center square crop
+  const sq = Math.round(Math.min(w, h) * 0.7);
+  code = tryDecode(crop(Math.round((w-sq)/2), Math.round((h-sq)/2), sq, sq));
+  if (code) return code;
+
+  // Strategy 5: rotated 90° (user may have held phone sideways)
+  code = tryDecode(rotate(canvas, 90));
+  if (code) return code;
+
+  // Strategy 6: rotated 270°
+  code = tryDecode(rotate(canvas, 270));
+  if (code) return code;
+
+  // Strategy 7: higher resolution pass (upscale 1.5x – helps with small barcodes)
+  const bigCanvas = document.createElement('canvas');
+  bigCanvas.width = Math.round(w * 1.5); bigCanvas.height = Math.round(h * 1.5);
+  bigCanvas.getContext('2d').drawImage(canvas, 0, 0, bigCanvas.width, bigCanvas.height);
+  code = tryDecode(bigCanvas);
+  if (code) return code;
+
+  return null;
 }
 
 async function lookupBarcode(barcode) {
