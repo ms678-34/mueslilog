@@ -484,7 +484,7 @@ function mkForm() {
   });
   sg.appendChild(sl); sg.appendChild(sp); wrap.appendChild(sg);
 
-  wrap.appendChild(mkField('Preis','number','z.B. 1,49 €','preis'));
+  wrap.appendChild(mkField('Preis','tel','z.B. 1,49 €','preis'));
   wrap.appendChild(mkField('Wo gekauft','text','z.B. Spar, Billa, DM…','gekauft'));
 
   const ng = div('field-group'), nl = el('label','lbl'); nl.textContent='Notizen';
