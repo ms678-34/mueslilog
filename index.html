@@ -142,8 +142,8 @@
 <!-- Firebase SDK (compat) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<!-- ZXing for barcode decoding -->
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.2/umd/index.min.js"></script>
+<!-- Quagga2 for barcode decoding -->
+<script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
 
 <script>
 // ══════════════════════════════════════════════════════
@@ -510,7 +510,7 @@ function mkDetail() {
   wrap.appendChild(body); return wrap;
 }
 
-// ─── Barcode ──────────────────────────────────────────
+// ─── Barcode (Quagga2) ────────────────────────────────
 
 async function handleBarcodeImage(file) {
   const btn = document.getElementById('scan-btn');
@@ -521,7 +521,7 @@ async function handleBarcodeImage(file) {
   };
   setBtn('<span>⏳</span> Bild wird analysiert…');
   try {
-    const code = await decodeBarcode(file);
+    const code = await decodeWithQuagga(file);
     setBtn(null);
     if (code) {
       await lookupBarcode(code);
@@ -535,121 +535,27 @@ async function handleBarcodeImage(file) {
   }
 }
 
-// ZXing decode — RGBLuminanceSource is the only path that works on iOS Safari.
-// BrowserMultiFormatReader.decodeFromCanvas does not exist on iOS Safari.
-function zxingDecode(canvas) {
-  const ctx = canvas.getContext('2d');
-  const { width, height } = canvas;
-  const imgData = ctx.getImageData(0, 0, width, height);
-  const lum = new ZXing.RGBLuminanceSource(imgData.data, width, height);
-  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
-  const hints = new Map([
-    [ZXing.DecodeHintType.TRY_HARDER, true],
-    [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-      ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
-      ZXing.BarcodeFormat.UPC_A,  ZXing.BarcodeFormat.UPC_E,
-      ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
-      ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.QR_CODE,
-    ]],
-  ]);
-  const reader = new ZXing.MultiFormatReader();
-  reader.setHints(hints);
-  return reader.decode(bmp);
-}
-
-// Load image via FileReader+Image (most compatible on iOS, no large intermediate canvas)
-function loadOriginalImage(file) {
-  return new Promise((resolve, reject) => {
+function decodeWithQuagga(file) {
+  return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = ev => {
-      const img = new Image();
-      img.onerror = reject;
-      img.onload = () => resolve(img);
-      img.src = ev.target.result;
+    reader.onload = (ev) => {
+      Quagga.decodeSingle({
+        decoder: {
+          readers: ['ean_reader', 'ean_8_reader', 'upc_reader', 'upc_e_reader', 'code_128_reader']
+        },
+        locate: true,
+        src: ev.target.result
+      }, (result) => {
+        if (result && result.codeResult && result.codeResult.code) {
+          resolve(result.codeResult.code);
+        } else {
+          resolve(null);
+        }
+      });
     };
     reader.readAsDataURL(file);
   });
 }
-
-// Crop a vertical strip from the original image and scale so HEIGHT = targetH.
-// This makes the barcode LARGER in the canvas — the key insight.
-// (Scaling by width first then cropping makes barcode smaller — wrong approach)
-function cropAndScaleH(img, y0frac, y1frac, targetH) {
-  const srcW = img.naturalWidth;
-  const srcH = img.naturalHeight;
-  const srcY  = Math.round(srcH * y0frac);
-  const cropH = Math.round(srcH * (y1frac - y0frac));
-  const scale  = targetH / cropH;
-  const canvasW = Math.round(srcW * scale);
-  const c = document.createElement('canvas');
-  c.width = canvasW; c.height = targetH;
-  c.getContext('2d').drawImage(img, 0, srcY, srcW, cropH, 0, 0, canvasW, targetH);
-  return c;
-}
-
-// Rotate image element into a canvas (for landscape photos)
-function rotateImage(img, deg) {
-  const srcW = img.naturalWidth, srcH = img.naturalHeight;
-  const rw = (deg === 90 || deg === 270) ? srcH : srcW;
-  const rh = (deg === 90 || deg === 270) ? srcW : srcH;
-  const c = document.createElement('canvas');
-  c.width = rw; c.height = rh;
-  const ctx = c.getContext('2d');
-  ctx.translate(rw/2, rh/2);
-  ctx.rotate(deg * Math.PI / 180);
-  ctx.drawImage(img, -srcW/2, -srcH/2);
-  return c;
-}
-
-// Crop+scale from a canvas (used after rotation)
-function cropCanvasAndScaleH(src, y0frac, y1frac, targetH) {
-  const srcW = src.width, srcH = src.height;
-  const srcY  = Math.round(srcH * y0frac);
-  const cropH = Math.round(srcH * (y1frac - y0frac));
-  const scale  = targetH / cropH;
-  const canvasW = Math.round(srcW * scale);
-  const c = document.createElement('canvas');
-  c.width = canvasW; c.height = targetH;
-  c.getContext('2d').drawImage(src, 0, srcY, srcW, cropH, 0, 0, canvasW, targetH);
-  return c;
-}
-
-async function decodeBarcode(file) {
-  const img = await loadOriginalImage(file);
-
-  // Strategy: crop vertical strip from ORIGINAL, then scale to height=600.
-  // Narrower strips → wider canvas → barcode bars are larger → ZXing succeeds.
-  // Tested and confirmed working at iPhone 13 mini resolution (3024x4032).
-  const H = 600;
-  const strips = [[0,1], [0.25,0.75], [0.3,0.7], [0.35,0.65], [0.4,0.6],
-                  [0,0.5], [0.5,1], [0.2,0.8]];
-
-  // Portrait strategies
-  for (const [y0, y1] of strips) {
-    try {
-      const result = zxingDecode(cropAndScaleH(img, y0, y1, H));
-      if (result) { console.log('✓', result.getText()); return result.getText(); }
-    } catch(e) { if (e?.name !== 'NotFoundException') console.warn(e?.name, e?.message); }
-  }
-
-  // Landscape strategies (photo taken sideways)
-  const rot90  = rotateImage(img, 90);
-  const rot270 = rotateImage(img, 270);
-  for (const rotated of [rot90, rot270]) {
-    for (const [y0, y1] of strips.slice(0, 4)) {
-      try {
-        const result = zxingDecode(cropCanvasAndScaleH(rotated, y0, y1, H));
-        if (result) { console.log('✓ rotated', result.getText()); return result.getText(); }
-      } catch(e) { if (e?.name !== 'NotFoundException') console.warn(e?.name, e?.message); }
-    }
-  }
-
-  return null;
-}
-
-
-
 
 
 
