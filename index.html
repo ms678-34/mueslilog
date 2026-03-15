@@ -146,37 +146,57 @@
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.2/umd/index.min.js"></script>
 
 <script>
-
-import { initializeApp} from "firebase/app";
-
 // ══════════════════════════════════════════════════════
 //  🔥 FIREBASE KONFIGURATION
 //  → console.firebase.google.com → Projekt → Einstellungen
 //    → "Deine Apps" → Web-App → firebaseConfig kopieren
 // ══════════════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "AIzaSyC1OKKFjAFaQl9CKqNOncN9MqpDJk7OuRQ",
-  authDomain: "mueslilog.firebaseapp.com",
-  projectId: "mueslilog",
-  storageBucket: "mueslilog.firebasestorage.app",
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyC1OKKFjAFaQl9CKqNOncN9MqpDJk7OuRQ",
+  authDomain:        "mueslilog.firebaseapp.com",
+  projectId:         "mueslilog",
+  storageBucket:     "mueslilog.firebasestorage.app",
   messagingSenderId: "571424078415",
-  appId: "1:571424078415:web:63e801ee690fdbe69ac83a"
+  appId:             "1:571424078415:web:63e801ee690fdbe69ac83a"
 };
 
 const USE_DB = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId);
 
-// ─── Firebase init ────────────────────────────────────
+// Global error handler — always show something instead of blank page
+window.onerror = (msg, src, line) => {
+  const app = document.getElementById('app');
+  if (app && !app.innerHTML.trim()) {
+    app.innerHTML = `<div style="padding:32px 24px;font-family:sans-serif;">
+      <div style="font-size:20px;font-weight:700;margin-bottom:8px;">Fehler beim Laden</div>
+      <div style="font-size:14px;color:#666;line-height:1.7;margin-bottom:16px;">${msg}<br><small>${src} Zeile ${line}</small></div>
+      <div style="font-size:13px;color:#888;">Öffne die Browser-Konsole (F12 / Safari Entwickler-Tools) für Details.</div>
+    </div>`;
+  }
+};
+
+// Firebase init — wrapped so a load failure never crashes the page
 let db = null;
 if (USE_DB) {
-  firebase.initializeApp(FIREBASE_CONFIG);
-  db = firebase.firestore();
+  try {
+    if (typeof firebase === 'undefined') throw new Error('Firebase SDK nicht geladen – Netzwerkproblem?');
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.firestore();
+  } catch(e) {
+    console.error('Firebase init:', e);
+  }
 }
 
 const COLLECTION = 'riegel';
 
 async function dbLoad() {
-  const snap = await db.collection(COLLECTION).orderBy('createdAt', 'desc').get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const snap = await db.collection(COLLECTION).get();
+  const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  // Sort client-side by createdAt descending (most recent first)
+  return docs.sort((a, b) => {
+    const ta = a.createdAt?.seconds || 0;
+    const tb = b.createdAt?.seconds || 0;
+    return tb - ta;
+  });
 }
 
 async function dbInsert(entry) {
@@ -233,9 +253,16 @@ async function boot() {
 // ─── Render ───────────────────────────────────────────
 function render() {
   const app = document.getElementById('app');
+  if (!app) return;
   app.innerHTML = '';
-  if (!USE_DB) {
-    app.appendChild(mkSetupScreen());
+  // Show setup screen only if config is completely empty
+  if (!USE_DB) { app.appendChild(mkSetupScreen()); return; }
+  // If config is set but db init failed, show error
+  if (!db) {
+    app.innerHTML = `<div style="padding:32px 24px;font-family:sans-serif;">
+      <div style="font-size:20px;font-weight:700;margin-bottom:8px;">Firebase konnte nicht verbunden werden</div>
+      <div style="font-size:14px;color:#666;line-height:1.7;">Mögliche Ursachen:<br>• Falscher API Key oder Project ID<br>• Firestore noch nicht aktiviert<br>• Netzwerkproblem<br><br>Öffne die Konsole (F12) für Details.</div>
+    </div>`;
     return;
   }
   app.appendChild(mkHeader());
