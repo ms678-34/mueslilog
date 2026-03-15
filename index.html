@@ -484,8 +484,8 @@ function mkForm() {
   });
   sg.appendChild(sl); sg.appendChild(sp); wrap.appendChild(sg);
 
-  wrap.appendChild(mkField('Preis','text','z.B. 1,49 €','preis'));
-  wrap.appendChild(mkField('Wo gekauft','text','z.B. Rewe, DM…','gekauft'));
+  wrap.appendChild(mkField('Preis','setup-num','z.B. 1,49 €','preis'));
+  wrap.appendChild(mkField('Wo gekauft','text','z.B. Spar, Billa, DM…','gekauft'));
 
   const ng = div('field-group'), nl = el('label','lbl'); nl.textContent='Notizen';
   const ta = el('textarea','inp'); ta.placeholder='Geschmack, Textur, Empfehlung…'; ta.value=form.notizen; ta.oninput=e=>form.notizen=e.target.value;
