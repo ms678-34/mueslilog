@@ -523,8 +523,11 @@ async function handleBarcodeImage(file) {
   try {
     const code = await decodeBarcode(file);
     setBtn(null);
-    if (code) { await lookupBarcode(code); }
-    else { toast('Kein Barcode erkannt – Barcode mittig ins Bild halten'); }
+    if (code) {
+      await lookupBarcode(code);
+    } else {
+      toast('Kein Barcode erkannt – Barcode flach halten und gut beleuchten');
+    }
   } catch(e) {
     console.error('Barcode error:', e);
     setBtn(null);
@@ -532,14 +535,10 @@ async function handleBarcodeImage(file) {
   }
 }
 
-// ZXing low-level decode — TRY_HARDER actually works here (decodeFromCanvas ignores hints)
-function zxingDecode(canvas) {
-  const ctx  = canvas.getContext('2d');
-  const { width, height } = canvas;
-  const imgData = ctx.getImageData(0, 0, width, height);
-  const src = new ZXing.RGBLuminanceSource(imgData.data, width, height);
-  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(src));
-  const hints = new Map([
+// BrowserMultiFormatReader is the CORRECT export in @zxing/library UMD.
+// MultiFormatReader is NOT exported — using it causes silent TypeError in every strategy.
+function makeHints() {
+  return new Map([
     [ZXing.DecodeHintType.TRY_HARDER, true],
     [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
       ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
@@ -548,38 +547,86 @@ function zxingDecode(canvas) {
       ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.QR_CODE,
     ]],
   ]);
-  const reader = new ZXing.MultiFormatReader();
-  reader.setHints(hints);
-  return reader.decode(bmp); // throws NotFoundException if nothing found
+}
+
+function zxingDecode(canvas) {
+  // BrowserMultiFormatReader passes hints (incl. TRY_HARDER) to its internal
+  // MultiFormatReader.decode() — this is the reliable path in the UMD bundle.
+  const reader = new ZXing.BrowserMultiFormatReader(makeHints());
+  return reader.decodeFromCanvas(canvas); // throws NotFoundException if not found
 }
 
 async function decodeBarcode(file) {
   const original = await loadImageCanvas(file, 1920);
+
   const strategies = [
     () => original,
-    () => preprocessCanvas(original, 'contrast'),
+    () => unsharpMask(original, 1.5),
+    () => unsharpMask(original, 3.0),
     () => cropRegion(original, 0.0, 0.35, 1.0, 0.65),
-    () => preprocessCanvas(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 'contrast'),
+    () => unsharpMask(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 2.0),
     () => cropCenter(original, 1.0, 0.5),
-    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'contrast'),
+    () => unsharpMask(cropCenter(original, 1.0, 0.5), 2.0),
     () => upscale(cropCenter(original, 1.0, 0.4), 2),
-    () => upscale(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 1.5),
+    () => unsharpMask(upscale(cropCenter(original, 1.0, 0.4), 2), 1.5),
+    () => upscale(original, 1.5),
+    () => preprocessCanvas(original, 'contrast'),
+    () => preprocessCanvas(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 'contrast'),
     () => preprocessCanvas(original, 'threshold'),
-    () => preprocessCanvas(cropCenter(original, 1.0, 0.4), 'threshold'),
     () => rotate(original, 90),
     () => rotate(original, 270),
-    () => preprocessCanvas(rotate(original, 90), 'contrast'),
+    () => unsharpMask(rotate(original, 90), 2.0),
     () => rotateSmall(original, 10),  () => rotateSmall(original, -10),
     () => rotateSmall(original, 20),  () => rotateSmall(original, -20),
-    () => preprocessCanvas(original, 'invert'),
   ];
+
   for (const strategy of strategies) {
     try {
       const result = zxingDecode(strategy());
-      if (result) { console.log('✓ Barcode:', result.getText()); return result.getText(); }
-    } catch(e) { /* NotFoundException = try next */ }
+      if (result) {
+        console.log('✓ Barcode:', result.getText());
+        return result.getText();
+      }
+    } catch(e) {
+      // NotFoundException = normal, try next. Log unexpected errors.
+      if (e && e.name !== 'NotFoundException') {
+        console.warn('Strategy error:', e.name, e.message);
+      }
+    }
   }
   return null;
+}
+
+// Real unsharp mask using canvas blur (NOT CSS filter — actually changes pixels)
+function unsharpMask(src, amount) {
+  const w = src.width, h = src.height;
+
+  // Draw blurred version
+  const blurCanvas = document.createElement('canvas');
+  blurCanvas.width = w; blurCanvas.height = h;
+  const bctx = blurCanvas.getContext('2d');
+  bctx.filter = 'blur(2px)';
+  bctx.drawImage(src, 0, 0);
+
+  // Get pixel data from both
+  const srcCtx = src.getContext('2d');
+  const origData = srcCtx.getImageData(0, 0, w, h);
+  const blurData = bctx.getImageData(0, 0, w, h);
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const outCtx = out.getContext('2d');
+  const outData = outCtx.createImageData(w, h);
+
+  const scale = 1 + amount;
+  for (let i = 0; i < origData.data.length; i += 4) {
+    outData.data[i]   = Math.min(255, Math.max(0, origData.data[i]   * scale - blurData.data[i]   * amount));
+    outData.data[i+1] = Math.min(255, Math.max(0, origData.data[i+1] * scale - blurData.data[i+1] * amount));
+    outData.data[i+2] = Math.min(255, Math.max(0, origData.data[i+2] * scale - blurData.data[i+2] * amount));
+    outData.data[i+3] = 255;
+  }
+  outCtx.putImageData(outData, 0, 0);
+  return out;
 }
 
 // Load file into canvas, fix EXIF orientation, scale to maxWidth
