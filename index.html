@@ -264,6 +264,7 @@
       animation: popUp .18s ease;
     }
     @keyframes popUp { from { opacity:0; transform:translateX(-50%) translateY(8px); } }
+    @keyframes tapRing { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(1.8); } }
 
     /* ── PAGE ANIM ── */
     .page { animation: fadeUp .2s ease; }
@@ -273,7 +274,6 @@
 <body>
 <div id="app"></div>
 
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 // ─── State ───────────────────────────────────────────
 const STORE = 'mueslilog-v2';
@@ -282,7 +282,8 @@ let view = 'list'; // list | add | detail
 let selectedId = null;
 let editMode = false;
 let form = blank();
-let scanner = null;
+let videoStream = null;
+let scanLoop = null;
 let scannerOpen = false;
 let toastTimer = null;
 
@@ -563,61 +564,178 @@ function mkDetail() {
   return wrap;
 }
 
-// ─── Barcode Scanner ─────────────────────────────────
-function openScanner() {
+// ─── Barcode Scanner (native BarcodeDetector + getUserMedia) ─────────────────
+async function openScanner() {
   if (scannerOpen) return;
   scannerOpen = true;
 
+  // Build overlay
   const overlay = div('scanner-overlay');
   overlay.id = 'scanner-overlay';
 
   const header = div('scanner-header');
   const titleEl = div('scanner-title'); titleEl.textContent = 'Barcode scannen';
   const closeBtn = el('button', 'scanner-close');
-  closeBtn.textContent = '✕'; closeBtn.onclick = closeScanner;
+  closeBtn.innerHTML = '✕'; closeBtn.onclick = closeScanner;
   header.appendChild(titleEl); header.appendChild(closeBtn);
   overlay.appendChild(header);
 
-  const qrDiv = div(''); qrDiv.id = 'qr-reader'; qrDiv.style.flex = '1';
-  overlay.appendChild(qrDiv);
+  // Video container
+  const videoWrap = div('');
+  videoWrap.style.cssText = 'flex:1;position:relative;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center;';
+  const video = el('video');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('muted', '');
+  video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+  videoWrap.appendChild(video);
 
-  // Corner frame overlay
+  // Corner frame
   const frame = div('scanner-frame'); frame.innerHTML = '<span></span>';
-  overlay.appendChild(frame);
+  videoWrap.appendChild(frame);
 
-  const hint = div('scanner-hint'); hint.textContent = 'Halte den Barcode in den Rahmen';
-  overlay.appendChild(hint);
+  // Tap-to-focus hint
+  const tapHint = div('');
+  tapHint.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;';
+  videoWrap.appendChild(tapHint);
 
+  overlay.appendChild(videoWrap);
+
+  // Bottom area: hint + shutter button
+  const bottom = div('');
+  bottom.style.cssText = 'padding:20px 20px calc(20px + var(--safe-bot));display:flex;flex-direction:column;align-items:center;gap:14px;flex-shrink:0;background:#000;';
+
+  const hint = div('scanner-hint');
+  hint.style.marginBottom = '0';
+  hint.textContent = 'Automatisch oder Taste drücken';
+  bottom.appendChild(hint);
+
+  // Big shutter button
+  const shutterBtn = el('button', '');
+  shutterBtn.style.cssText = `
+    width:68px;height:68px;border-radius:50%;
+    border:4px solid rgba(255,255,255,0.8);
+    background:rgba(255,255,255,0.15);
+    cursor:pointer;display:flex;align-items:center;justify-content:center;
+    transition:transform .1s,background .1s;
+  `;
+  shutterBtn.innerHTML = '<div style="width:52px;height:52px;border-radius:50%;background:#fff;"></div>';
+  shutterBtn.addEventListener('touchstart', () => { shutterBtn.style.transform='scale(.92)'; shutterBtn.style.background='rgba(255,255,255,0.3)'; });
+  shutterBtn.addEventListener('touchend',   () => { shutterBtn.style.transform=''; shutterBtn.style.background='rgba(255,255,255,0.15)'; });
+  shutterBtn.onclick = () => manualScan(video);
+  bottom.appendChild(shutterBtn);
+  overlay.appendChild(bottom);
   document.getElementById('app').appendChild(overlay);
 
-  // Start scanner
-  scanner = new Html5Qrcode('qr-reader');
-  scanner.start(
-    { facingMode: 'environment' },
-    {
-      fps: 15,
-      qrbox: { width: 300, height: 140 },
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
-    },
-    async (barcode) => {
-      await closeScanner();
-      await lookupBarcode(barcode);
-    },
-    () => {}
-  ).catch(err => {
-    console.warn('Scanner error:', err);
-    closeScanner();
+  // Request camera
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false
+    });
+    video.srcObject = videoStream;
+
+    // Enable continuous autofocus
+    const track = videoStream.getVideoTracks()[0];
+    try {
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } catch(e) {}
+
+    // Tap video to trigger focus
+    video.addEventListener('click', async () => {
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'auto' }] }); } catch(e) {}
+      setTimeout(async () => {
+        try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch(e) {}
+      }, 500);
+      // Flash tap indicator
+      tapHint.textContent = ''; tapHint.style.cssText += ';opacity:1;';
+      const ring = div(''); ring.style.cssText='width:60px;height:60px;border-radius:50%;border:2px solid var(--accent);animation:tapRing .4s ease forwards;';
+      tapHint.appendChild(ring);
+      setTimeout(() => tapHint.innerHTML = '', 500);
+    });
+
+    await video.play();
+
+    // Auto-scan loop using BarcodeDetector if available
+    if ('BarcodeDetector' in window) {
+      const detector = new BarcodeDetector({
+        formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code','data_matrix']
+      });
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      async function scanFrame() {
+        if (!scannerOpen) return;
+        if (video.readyState >= 2 && video.videoWidth > 0) {
+          canvas.width  = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          try {
+            const results = await detector.detect(canvas);
+            if (results.length > 0) {
+              const code = results[0].rawValue;
+              await closeScanner();
+              await lookupBarcode(code);
+              return;
+            }
+          } catch(e) {}
+        }
+        scanLoop = requestAnimationFrame(scanFrame);
+      }
+      scanLoop = requestAnimationFrame(scanFrame);
+    } else {
+      hint.textContent = 'Taste drücken wenn Barcode scharf sichtbar';
+    }
+
+  } catch(err) {
+    await closeScanner();
     toast('Kamera konnte nicht geöffnet werden');
-  });
+  }
+}
+
+// Manual scan: grab current frame and try to decode
+async function manualScan(video) {
+  if (!video || video.readyState < 2) return;
+  const canvas = document.createElement('canvas');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+
+  if ('BarcodeDetector' in window) {
+    try {
+      const detector = new BarcodeDetector({
+        formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code']
+      });
+      const results = await detector.detect(canvas);
+      if (results.length > 0) {
+        const code = results[0].rawValue;
+        await closeScanner();
+        await lookupBarcode(code);
+        return;
+      }
+    } catch(e) {}
+    toast('Kein Barcode erkannt – nochmals versuchen');
+  } else {
+    // Fallback: let user type barcode manually
+    const code = prompt('BarcodeDetector nicht verfügbar.\nBarcode manuell eingeben:');
+    if (code && code.trim()) {
+      await closeScanner();
+      await lookupBarcode(code.trim());
+    }
+  }
 }
 
 async function closeScanner() {
   if (!scannerOpen) return;
   scannerOpen = false;
-  try {
-    if (scanner && scanner.isScanning) await scanner.stop();
-  } catch(e) {}
-  scanner = null;
+  if (scanLoop) { cancelAnimationFrame(scanLoop); scanLoop = null; }
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
   const overlay = document.getElementById('scanner-overlay');
   if (overlay) overlay.remove();
 }
