@@ -274,6 +274,7 @@
 <body>
 <div id="app"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script>
 // ─── State ───────────────────────────────────────────
 const STORE = 'mueslilog-v2';
@@ -282,8 +283,6 @@ let view = 'list'; // list | add | detail
 let selectedId = null;
 let editMode = false;
 let form = blank();
-let videoStream = null;
-let scanLoop = null;
 let scannerOpen = false;
 let toastTimer = null;
 
@@ -492,16 +491,30 @@ function mkField(label, type, placeholder, key) {
 }
 
 function handleSave() {
-  if (!form.name.trim()) { toast('Bitte Name eingeben'); return; }
-  if (!form.bewertung)   { toast('Bitte Bewertung vergeben ★'); return; }
-  if (editMode) {
-    riegel = riegel.map(r => r.id === form.id ? {...form} : r);
-    toast('Gespeichert ✓');
-  } else {
-    riegel.unshift({...form, id: Date.now(), datum: new Date().toLocaleDateString('de-DE')});
-    toast('Eingetragen ✓');
+  if (!form.name.trim()) {
+    toast('⚠️ Bitte Name eingeben');
+    document.querySelector('.inp')?.focus();
+    return;
   }
-  save(); view = 'list'; editMode = false; form = blank(); render();
+  if (!form.bewertung) {
+    toast('⚠️ Bitte Bewertung vergeben ★');
+    return;
+  }
+  try {
+    if (editMode) {
+      riegel = riegel.map(r => r.id === form.id ? {...form} : r);
+    } else {
+      riegel.unshift({...form, id: Date.now(), datum: new Date().toLocaleDateString('de-DE')});
+    }
+    save();
+  } catch(e) {
+    toast('Speichern fehlgeschlagen – Speicher voll?');
+    return;
+  }
+  const msg = editMode ? 'Gespeichert ✓' : 'Riegel eingetragen ✓';
+  view = 'list'; editMode = false; form = blank();
+  render();
+  toast(msg);
 }
 
 // ─── Detail ──────────────────────────────────────────
@@ -564,15 +577,17 @@ function mkDetail() {
   return wrap;
 }
 
-// ─── Barcode Scanner (native BarcodeDetector + getUserMedia) ─────────────────
+// ─── Barcode Scanner (ZXing – funktioniert auf iOS Safari) ───────────────────
+let zxingReader = null;
+
 async function openScanner() {
   if (scannerOpen) return;
   scannerOpen = true;
 
-  // Build overlay
   const overlay = div('scanner-overlay');
   overlay.id = 'scanner-overlay';
 
+  // Header
   const header = div('scanner-header');
   const titleEl = div('scanner-title'); titleEl.textContent = 'Barcode scannen';
   const closeBtn = el('button', 'scanner-close');
@@ -580,162 +595,89 @@ async function openScanner() {
   header.appendChild(titleEl); header.appendChild(closeBtn);
   overlay.appendChild(header);
 
-  // Video container
+  // Video area
   const videoWrap = div('');
-  videoWrap.style.cssText = 'flex:1;position:relative;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center;';
+  videoWrap.style.cssText = 'flex:1;position:relative;overflow:hidden;background:#000;';
   const video = el('video');
+  video.id = 'scanner-video';
   video.setAttribute('playsinline', '');
   video.setAttribute('muted', '');
-  video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+  video.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
   videoWrap.appendChild(video);
-
-  // Corner frame
   const frame = div('scanner-frame'); frame.innerHTML = '<span></span>';
   videoWrap.appendChild(frame);
-
-  // Tap-to-focus hint
-  const tapHint = div('');
-  tapHint.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;';
-  videoWrap.appendChild(tapHint);
-
   overlay.appendChild(videoWrap);
 
-  // Bottom area: hint + shutter button
+  // Bottom controls
   const bottom = div('');
-  bottom.style.cssText = 'padding:20px 20px calc(20px + var(--safe-bot));display:flex;flex-direction:column;align-items:center;gap:14px;flex-shrink:0;background:#000;';
+  bottom.style.cssText = 'padding:16px 20px calc(24px + var(--safe-bot));display:flex;flex-direction:column;align-items:center;gap:12px;background:#111;flex-shrink:0;';
 
-  const hint = div('scanner-hint');
-  hint.style.marginBottom = '0';
-  hint.textContent = 'Automatisch oder Taste drücken';
-  bottom.appendChild(hint);
+  const statusEl = div('scanner-hint');
+  statusEl.id = 'scanner-status';
+  statusEl.style.margin = '0';
+  statusEl.textContent = 'Kamera wird gestartet…';
+  bottom.appendChild(statusEl);
 
-  // Big shutter button
   const shutterBtn = el('button', '');
-  shutterBtn.style.cssText = `
-    width:68px;height:68px;border-radius:50%;
-    border:4px solid rgba(255,255,255,0.8);
-    background:rgba(255,255,255,0.15);
-    cursor:pointer;display:flex;align-items:center;justify-content:center;
-    transition:transform .1s,background .1s;
-  `;
-  shutterBtn.innerHTML = '<div style="width:52px;height:52px;border-radius:50%;background:#fff;"></div>';
-  shutterBtn.addEventListener('touchstart', () => { shutterBtn.style.transform='scale(.92)'; shutterBtn.style.background='rgba(255,255,255,0.3)'; });
-  shutterBtn.addEventListener('touchend',   () => { shutterBtn.style.transform=''; shutterBtn.style.background='rgba(255,255,255,0.15)'; });
-  shutterBtn.onclick = () => manualScan(video);
+  shutterBtn.id = 'shutter-btn';
+  shutterBtn.style.cssText = 'width:70px;height:70px;border-radius:50%;border:4px solid rgba(255,255,255,.7);background:rgba(255,255,255,.12);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform .1s;';
+  shutterBtn.innerHTML = '<div style="width:54px;height:54px;border-radius:50%;background:#fff;"></div>';
+  shutterBtn.addEventListener('touchstart', () => shutterBtn.style.transform = 'scale(.9)', {passive:true});
+  shutterBtn.addEventListener('touchend',   () => shutterBtn.style.transform = '');
+  shutterBtn.onclick = manualCapture;
   bottom.appendChild(shutterBtn);
+
+  const sub = div('');
+  sub.style.cssText = 'font-size:11px;color:rgba(255,255,255,.4);';
+  sub.textContent = 'Wird automatisch erkannt oder Taste drücken';
+  bottom.appendChild(sub);
+
   overlay.appendChild(bottom);
   document.getElementById('app').appendChild(overlay);
 
-  // Request camera
+  // Init ZXing
   try {
-    videoStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width:  { ideal: 1920 },
-        height: { ideal: 1080 },
-      },
-      audio: false
-    });
-    video.srcObject = videoStream;
+    zxingReader = new ZXing.BrowserMultiFormatReader();
+    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    const backCam = devices.find(d => /back|rear|environment/i.test(d.label));
+    const deviceId = (backCam || devices[devices.length - 1])?.deviceId;
 
-    // Enable continuous autofocus
-    const track = videoStream.getVideoTracks()[0];
-    try {
-      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-    } catch(e) {}
+    document.getElementById('scanner-status').textContent = 'Barcode in den Rahmen halten';
 
-    // Tap video to trigger focus
-    video.addEventListener('click', async () => {
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'auto' }] }); } catch(e) {}
-      setTimeout(async () => {
-        try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch(e) {}
-      }, 500);
-      // Flash tap indicator
-      tapHint.textContent = ''; tapHint.style.cssText += ';opacity:1;';
-      const ring = div(''); ring.style.cssText='width:60px;height:60px;border-radius:50%;border:2px solid var(--accent);animation:tapRing .4s ease forwards;';
-      tapHint.appendChild(ring);
-      setTimeout(() => tapHint.innerHTML = '', 500);
-    });
-
-    await video.play();
-
-    // Auto-scan loop using BarcodeDetector if available
-    if ('BarcodeDetector' in window) {
-      const detector = new BarcodeDetector({
-        formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code','data_matrix']
-      });
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      async function scanFrame() {
-        if (!scannerOpen) return;
-        if (video.readyState >= 2 && video.videoWidth > 0) {
-          canvas.width  = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
-          try {
-            const results = await detector.detect(canvas);
-            if (results.length > 0) {
-              const code = results[0].rawValue;
-              await closeScanner();
-              await lookupBarcode(code);
-              return;
-            }
-          } catch(e) {}
-        }
-        scanLoop = requestAnimationFrame(scanFrame);
+    await zxingReader.decodeFromVideoDevice(deviceId, 'scanner-video', (result, err) => {
+      if (result) {
+        const code = result.getText();
+        closeScanner();
+        lookupBarcode(code);
       }
-      scanLoop = requestAnimationFrame(scanFrame);
-    } else {
-      hint.textContent = 'Taste drücken wenn Barcode scharf sichtbar';
-    }
-
+    });
   } catch(err) {
-    await closeScanner();
+    closeScanner();
     toast('Kamera konnte nicht geöffnet werden');
   }
 }
 
-// Manual scan: grab current frame and try to decode
-async function manualScan(video) {
-  if (!video || video.readyState < 2) return;
-  const canvas = document.createElement('canvas');
-  canvas.width  = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
-
-  if ('BarcodeDetector' in window) {
-    try {
-      const detector = new BarcodeDetector({
-        formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code']
-      });
-      const results = await detector.detect(canvas);
-      if (results.length > 0) {
-        const code = results[0].rawValue;
-        await closeScanner();
-        await lookupBarcode(code);
-        return;
-      }
-    } catch(e) {}
-    toast('Kein Barcode erkannt – nochmals versuchen');
-  } else {
-    // Fallback: let user type barcode manually
-    const code = prompt('BarcodeDetector nicht verfügbar.\nBarcode manuell eingeben:');
-    if (code && code.trim()) {
-      await closeScanner();
-      await lookupBarcode(code.trim());
-    }
+async function manualCapture() {
+  const video = document.getElementById('scanner-video');
+  if (!video || !zxingReader) return;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const result = zxingReader.decodeFromCanvas(canvas);
+    const code = result.getText();
+    closeScanner();
+    lookupBarcode(code);
+  } catch(e) {
+    toast('Kein Barcode erkannt – nochmal versuchen');
   }
 }
 
 async function closeScanner() {
   if (!scannerOpen) return;
   scannerOpen = false;
-  if (scanLoop) { cancelAnimationFrame(scanLoop); scanLoop = null; }
-  if (videoStream) {
-    videoStream.getTracks().forEach(t => t.stop());
-    videoStream = null;
-  }
+  try { if (zxingReader) { zxingReader.reset(); zxingReader = null; } } catch(e) {}
   const overlay = document.getElementById('scanner-overlay');
   if (overlay) overlay.remove();
 }
