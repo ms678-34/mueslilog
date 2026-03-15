@@ -512,125 +512,193 @@ function mkDetail() {
 
 // ─── Barcode ──────────────────────────────────────────
 
-// Main entry point: file → fix EXIF → try multiple strategies → lookup
+// ZXing reader with TRY_HARDER hint — the key to reliable scanning
+function makeReader() {
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.CODE_128,
+    ZXing.BarcodeFormat.CODE_39,
+    ZXing.BarcodeFormat.DATA_MATRIX,
+    ZXing.BarcodeFormat.QR_CODE,
+  ]);
+  return new ZXing.BrowserMultiFormatReader(hints);
+}
+
 async function handleBarcodeImage(file) {
   const btn = document.getElementById('scan-btn');
-  const setBtn = (txt) => { if (!btn) return; btn.classList.toggle('loading', txt !== null); btn.innerHTML = txt || '<span>📷</span> Barcode scannen'; };
+  const setBtn = (txt) => {
+    if (!btn) return;
+    btn.classList.toggle('loading', !!txt);
+    btn.innerHTML = txt || '<span>📷</span> Barcode scannen';
+  };
   setBtn('<span>⏳</span> Bild wird analysiert…');
 
   try {
-    // 1. Draw image to canvas with EXIF rotation corrected
-    const canvas = await imageFileToCanvas(file, 1280);
-
-    // 2. Try scanning with multiple strategies
-    const code = await tryDecodeStrategies(canvas);
-
+    const code = await decodeBarcode(file);
     setBtn(null);
     if (code) {
       await lookupBarcode(code);
     } else {
-      toast('Kein Barcode erkannt – näher herangehen oder bessere Beleuchtung');
+      toast('Kein Barcode erkannt – Barcode mittig halten, gute Beleuchtung');
     }
   } catch(e) {
-    console.error('Barcode error:', e);
+    console.error('Barcode decode error:', e);
     setBtn(null);
     toast('Fehler beim Verarbeiten des Fotos');
   }
 }
 
-// Load image file into canvas, correcting EXIF orientation
-async function imageFileToCanvas(file, maxWidth) {
-  // createImageBitmap respects EXIF orientation in modern browsers (incl. iOS 15+)
+async function decodeBarcode(file) {
+  // Step 1: load image correcting EXIF rotation, keep high res (1920px)
+  const original = await loadImageCanvas(file, 1920);
+
+  // Step 2: try all strategies in order, return first hit
+  const strategies = [
+    () => original,
+    () => preprocessCanvas(original, 'contrast'),
+    () => cropCenter(original, 1.0, 0.5),            // center horizontal strip
+    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'contrast'),
+    () => preprocessCanvas(cropCenter(original, 1.0, 0.5), 'threshold'),
+    () => cropCenter(original, 1.0, 0.4),             // tighter strip
+    () => upscale(cropCenter(original, 1.0, 0.4), 2), // upscaled strip
+    () => cropRegion(original, 0.0, 0.35, 1.0, 0.65), // lower-center (typical hand-held shot)
+    () => preprocessCanvas(cropRegion(original, 0.0, 0.35, 1.0, 0.65), 'contrast'),
+    () => cropRegion(original, 0.2, 0.3, 0.9, 0.7),  // center quadrant
+    () => upscale(cropRegion(original, 0.2, 0.3, 0.9, 0.7), 1.5),
+    () => preprocessCanvas(original, 'threshold'),
+    () => rotate(original, 90),
+    () => rotate(original, 270),
+    () => preprocessCanvas(rotate(original, 90), 'contrast'),
+    () => rotateSmall(original, 10),
+    () => rotateSmall(original, -10),
+    () => rotateSmall(original, 20),
+    () => rotateSmall(original, -20),
+    () => preprocessCanvas(original, 'invert'),
+  ];
+
+  const reader = makeReader();
+  for (const strategy of strategies) {
+    try {
+      const canvas = strategy();
+      const result = reader.decodeFromCanvas(canvas);
+      if (result) {
+        console.log('Barcode found:', result.getText());
+        return result.getText();
+      }
+    } catch(e) {
+      // NotFoundException is normal — just means this strategy didn't work
+    }
+  }
+  return null;
+}
+
+// Load file into canvas, fix EXIF orientation, scale to maxWidth
+async function loadImageCanvas(file, maxWidth) {
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch(e) {
-    // Fallback: load as data URL (no EXIF correction, but better than nothing)
     bitmap = await createImageBitmap(file);
   }
-
-  const scale = Math.min(1, maxWidth / bitmap.width);
+  const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width  * scale);
   const h = Math.round(bitmap.height * scale);
-
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bitmap, 0, 0, w, h);
   bitmap.close?.();
-  return canvas;
+  return c;
 }
 
-// Try multiple decode strategies, return barcode string or null
-async function tryDecodeStrategies(canvas) {
-  const reader = new ZXing.BrowserMultiFormatReader();
-  const w = canvas.width, h = canvas.height;
-  const ctx = canvas.getContext('2d');
+// Preprocess: boost contrast, apply threshold, or invert
+function preprocessCanvas(src, mode) {
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const ctx = c.getContext('2d');
 
-  // Helper: decode a canvas, return string or null
-  function tryDecode(c) {
-    try { return reader.decodeFromCanvas(c).getText(); } catch(e) { return null; }
+  if (mode === 'contrast') {
+    // High contrast via CSS filter
+    ctx.filter = 'contrast(200%) brightness(110%)';
+    ctx.drawImage(src, 0, 0);
+    ctx.filter = 'none';
+  } else if (mode === 'threshold') {
+    // Manual binarization — converts to pure black/white
+    ctx.drawImage(src, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    for (let i = 0; i < d.data.length; i += 4) {
+      const lum = 0.299*d.data[i] + 0.587*d.data[i+1] + 0.114*d.data[i+2];
+      const v = lum > 128 ? 255 : 0;
+      d.data[i] = d.data[i+1] = d.data[i+2] = v;
+    }
+    ctx.putImageData(d, 0, 0);
+  } else if (mode === 'invert') {
+    ctx.filter = 'invert(100%)';
+    ctx.drawImage(src, 0, 0);
+    ctx.filter = 'none';
   }
+  return c;
+}
 
-  // Helper: extract a sub-region into a new canvas
-  function crop(x, y, cw, ch) {
-    const c = document.createElement('canvas');
-    c.width = cw; c.height = ch;
-    c.getContext('2d').drawImage(canvas, x, y, cw, ch, 0, 0, cw, ch);
-    return c;
-  }
+// Crop center strip: fracW and fracH as fraction of original
+function cropCenter(src, fracW, fracH) {
+  const cw = Math.round(src.width  * fracW);
+  const ch = Math.round(src.height * fracH);
+  const x  = Math.round((src.width  - cw) / 2);
+  const y  = Math.round((src.height - ch) / 2);
+  return cropRegion(src, x/src.width, y/src.height, (x+cw)/src.width, (y+ch)/src.height);
+}
 
-  // Helper: rotate a canvas by degrees
-  function rotate(src, deg) {
-    const rad = deg * Math.PI / 180;
-    const sw = src.width, sh = src.height;
-    const rw = deg === 90 || deg === 270 ? sh : sw;
-    const rh = deg === 90 || deg === 270 ? sw : sh;
-    const c = document.createElement('canvas');
-    c.width = rw; c.height = rh;
-    const cx = c.getContext('2d');
-    cx.translate(rw/2, rh/2);
-    cx.rotate(rad);
-    cx.drawImage(src, -sw/2, -sh/2);
-    return c;
-  }
+// Crop by relative coordinates (0..1)
+function cropRegion(src, x0, y0, x1, y1) {
+  const x  = Math.round(src.width  * x0);
+  const y  = Math.round(src.height * y0);
+  const cw = Math.round(src.width  * (x1 - x0));
+  const ch = Math.round(src.height * (y1 - y0));
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch;
+  c.getContext('2d').drawImage(src, x, y, cw, ch, 0, 0, cw, ch);
+  return c;
+}
 
-  // Strategy 1: full image as-is
-  let code = tryDecode(canvas);
-  if (code) return code;
+// Rotate 90/180/270
+function rotate(src, deg) {
+  const rad = deg * Math.PI / 180;
+  const sw = src.width, sh = src.height;
+  const rw = (deg === 90 || deg === 270) ? sh : sw;
+  const rh = (deg === 90 || deg === 270) ? sw : sh;
+  const c = document.createElement('canvas');
+  c.width = rw; c.height = rh;
+  const ctx = c.getContext('2d');
+  ctx.translate(rw/2, rh/2);
+  ctx.rotate(rad);
+  ctx.drawImage(src, -sw/2, -sh/2);
+  return c;
+}
 
-  // Strategy 2: center horizontal strip (barcode usually in middle of frame)
-  const stripH = Math.round(h * 0.4);
-  const stripY = Math.round(h * 0.3);
-  code = tryDecode(crop(0, stripY, w, stripH));
-  if (code) return code;
+// Small angle rotation (handles slightly tilted barcodes)
+function rotateSmall(src, deg) {
+  const rad = deg * Math.PI / 180;
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const ctx = c.getContext('2d');
+  ctx.translate(src.width/2, src.height/2);
+  ctx.rotate(rad);
+  ctx.drawImage(src, -src.width/2, -src.height/2);
+  return c;
+}
 
-  // Strategy 3: center vertical strip (for portrait-held phone)
-  const stripW = Math.round(w * 0.5);
-  const stripX = Math.round(w * 0.25);
-  code = tryDecode(crop(stripX, 0, stripW, h));
-  if (code) return code;
-
-  // Strategy 4: center square crop
-  const sq = Math.round(Math.min(w, h) * 0.7);
-  code = tryDecode(crop(Math.round((w-sq)/2), Math.round((h-sq)/2), sq, sq));
-  if (code) return code;
-
-  // Strategy 5: rotated 90° (user may have held phone sideways)
-  code = tryDecode(rotate(canvas, 90));
-  if (code) return code;
-
-  // Strategy 6: rotated 270°
-  code = tryDecode(rotate(canvas, 270));
-  if (code) return code;
-
-  // Strategy 7: higher resolution pass (upscale 1.5x – helps with small barcodes)
-  const bigCanvas = document.createElement('canvas');
-  bigCanvas.width = Math.round(w * 1.5); bigCanvas.height = Math.round(h * 1.5);
-  bigCanvas.getContext('2d').drawImage(canvas, 0, 0, bigCanvas.width, bigCanvas.height);
-  code = tryDecode(bigCanvas);
-  if (code) return code;
-
-  return null;
+// Upscale canvas by factor
+function upscale(src, factor) {
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * factor);
+  c.height = Math.round(src.height * factor);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return c;
 }
 
 async function lookupBarcode(barcode) {
