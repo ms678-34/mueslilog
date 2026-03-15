@@ -535,10 +535,15 @@ async function handleBarcodeImage(file) {
   }
 }
 
-// BrowserMultiFormatReader is the CORRECT export in @zxing/library UMD.
-// MultiFormatReader is NOT exported — using it causes silent TypeError in every strategy.
-function makeHints() {
-  return new Map([
+// iOS Safari: decodeFromCanvas does NOT exist on BrowserMultiFormatReader.
+// Only path that works: RGBLuminanceSource → BinaryBitmap → MultiFormatReader.decode()
+function zxingDecode(canvas) {
+  const ctx = canvas.getContext('2d');
+  const { width, height } = canvas;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const lum = new ZXing.RGBLuminanceSource(imgData.data, width, height);
+  const bmp = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+  const hints = new Map([
     [ZXing.DecodeHintType.TRY_HARDER, true],
     [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
       ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
@@ -547,13 +552,9 @@ function makeHints() {
       ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.QR_CODE,
     ]],
   ]);
-}
-
-function zxingDecode(canvas) {
-  // BrowserMultiFormatReader passes hints (incl. TRY_HARDER) to its internal
-  // MultiFormatReader.decode() — this is the reliable path in the UMD bundle.
-  const reader = new ZXing.BrowserMultiFormatReader(makeHints());
-  return reader.decodeFromCanvas(canvas); // throws NotFoundException if not found
+  const reader = new ZXing.MultiFormatReader();
+  reader.setHints(hints);
+  return reader.decode(bmp);
 }
 
 async function decodeBarcode(file) {
@@ -629,7 +630,7 @@ function unsharpMask(src, amount) {
   return out;
 }
 
-// Load file into canvas, fix EXIF orientation, scale to maxWidth
+// Load file correcting EXIF, scale longest side to maxPx (1200 = sweet spot for ZXing)
 async function loadImageCanvas(file, maxWidth) {
   let bitmap;
   try {
@@ -637,7 +638,9 @@ async function loadImageCanvas(file, maxWidth) {
   } catch(e) {
     bitmap = await createImageBitmap(file);
   }
-  const scale = Math.min(1, maxWidth / Math.max(bitmap.width, bitmap.height));
+  // Always scale down to max 1200px — iPhone shoots at 3024x4032 which is too large for ZXing
+  const limit = Math.min(maxWidth, 1200);
+  const scale = Math.min(1, limit / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width  * scale);
   const h = Math.round(bitmap.height * scale);
   const c = document.createElement('canvas');
